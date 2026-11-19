@@ -1,0 +1,41 @@
+// Package {{.N.Module}} 是{{.D.Title}}模块。module.go 是它对组合根暴露的唯一入口。
+package {{.N.Module}}
+
+import (
+	"github.com/labstack/echo/v5"
+
+	"{{.GoMod}}/internal/modules/{{.N.Module}}/{{.N.APIPackage}}"
+	"{{.GoMod}}/internal/modules/{{.N.Module}}/domain"
+	"{{.GoMod}}/internal/modules/{{.N.Module}}/postgres"
+	"{{.GoMod}}/internal/platform/dbtx"
+)
+
+type Deps struct {
+	DB *dbtx.Handle
+{{- if .WebAuth}}
+	// Auth 是前台的登录检查，由组合根注入。
+	Auth echo.MiddlewareFunc
+{{- end}}
+}
+
+type Module struct {
+	Service *domain.Service
+{{- if .WebAuth}}
+	auth    echo.MiddlewareFunc
+{{- end}}
+}
+
+func New(d Deps) *Module {
+	return &Module{Service: domain.NewService(postgres.NewRepository(d.DB)){{if .WebAuth}}, auth: d.Auth{{end}}}
+}
+{{if .Admin}}
+// RegisterAdminHTTP 挂载 api/admin.yaml 中 tag={{.N.Tag}} 的全部操作。
+func (m *Module) RegisterAdminHTTP(g *echo.Group) {
+	adminapi.Register(g, adminapi.NewHandler(m.Service))
+}
+{{else}}
+// RegisterHTTP 挂载 api/openapi.yaml 中 tag={{.N.Tag}} 的全部操作。
+func (m *Module) RegisterHTTP(g *echo.Group) {
+	httpapi.Register(g, httpapi.NewHandler(m.Service){{if .WebAuth}}, httpapi.Middlewares{Auth: m.auth}{{end}})
+}
+{{end}}

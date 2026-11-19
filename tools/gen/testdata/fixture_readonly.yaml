@@ -1,0 +1,16 @@
+# 只读的后台资源：没有新建、修改、删除，也没有动作；说明里有单引号和双引号（表注释要转义）。
+module: fixturero
+resource: memo
+title: 备忘
+description: 夹具：只读资源，说明里有 '单引号' 和 "双引号"
+display: subject
+fields:
+  subject: { type: string, title: 主题, required: true, max: 100 }
+  body:    { type: text, title: 正文, max: 2000 }
+indexes:
+  - columns: [-created_at, -id]
+    for: 后台列表的默认排序：ORDER BY created_at DESC, id DESC LIMIT/OFFSET
+admin:
+  operations: []
+  list:
+    columns: [subject, created_at]

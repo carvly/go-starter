@@ -1,0 +1,27 @@
+version: "2"
+
+# 带 build tag 的测试文件（集成测试、生成器夹具）也要检查，否则它们从不被 lint。
+run:
+  build-tags:
+    - integration
+    - genfixture
+
+# 最小必要集：新增 linter 前先确认它在这个项目里报的是真问题。
+# nolintlint 要求 //nolint 指明具体 linter 并写明理由：给检查开例外本身就是
+# 规则变更，必须留下可审查的说明。
+linters:
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - unused
+    - nolintlint
+  settings:
+    nolintlint:
+      require-specific: true
+      require-explanation: true
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

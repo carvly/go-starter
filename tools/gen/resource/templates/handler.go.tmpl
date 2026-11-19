@@ -1,0 +1,208 @@
+// Package {{.N.APIPackage}} 是 {{.N.Module}} 的{{if .Admin}}后台{{end}} HTTP 适配器：Bind → Validate → 调 Service →
+// 序列化，不含业务规则。
+package {{.N.APIPackage}}
+
+import (
+	"net/http"
+	"time"
+
+	"github.com/labstack/echo/v5"
+	openapi_types "github.com/oapi-codegen/runtime/types"
+
+	"{{.GoMod}}/internal/kit/page"
+	"{{.GoMod}}/internal/modules/{{.N.Module}}/{{.N.APIPackage}}/oapi"
+	"{{.GoMod}}/internal/modules/{{.N.Module}}/domain"
+	"{{.GoMod}}/internal/platform/httpserver"
+)
+
+type Handler struct {
+	service *domain.Service
+}
+
+func NewHandler(service *domain.Service) *Handler {
+	return &Handler{service: service}
+}
+
+func to{{.N.Type}}(v *domain.{{.N.Type}}) oapi.{{.N.Type}} {
+	return oapi.{{.N.Type}}{
+		Id: v.ID,
+{{- range .Fields}}
+		{{.Go}}: {{.ToResp (printf "v.%s" .Go)}},
+{{- end}}
+{{- if .HasUpdate}}
+		Version: v.Version,
+{{- end}}
+		CreatedAt: v.CreatedAt,
+		UpdatedAt: v.UpdatedAt,
+	}
+}
+{{if .Admin}}
+func (h *Handler) {{pascal .N.OpList}}(c *echo.Context, params oapi.{{pascal .N.OpList}}Params) error {
+	p, err := httpserver.PageRequest(params.Page, params.Size)
+	if err != nil {
+		return err
+	}
+	sort := ""
+	if params.Sort != nil {
+		sort = string(*params.Sort)
+	}
+	s, err := page.ParseSort(sort, domain.DefaultSort, domain.SortFields...)
+	if err != nil {
+		return err
+	}
+	var f domain.{{.N.Type}}Filter
+{{- if .Search}}
+	if params.Q != nil {
+		f.Keyword = *params.Q
+	}
+{{- end}}
+{{- range .Filters}}
+{{- if eq .Type "enum"}}
+	if params.{{.Go}} != nil {
+		for _, v := range *params.{{.Go}} {
+			f.{{.Go}} = append(f.{{.Go}}, domain.{{.EnumType}}(v))
+		}
+	}
+{{- else if eq .Type "bool"}}
+	f.{{.Go}} = params.{{.Go}}
+{{- else if eq .Type "date"}}
+	f.{{.Go}}From, f.{{.Go}}To = dateOf(params.{{.Go}}From), dateOf(params.{{.Go}}To)
+{{- else}}
+	f.{{.Go}}From, f.{{.Go}}To = params.{{.Go}}From, params.{{.Go}}To
+{{- end}}
+{{- end}}
+	r, err := h.service.List(c.Request().Context(), f, s, p)
+	if err != nil {
+		return err
+	}
+	resp := oapi.{{.N.Type}}Page{Items: make([]oapi.{{.N.Type}}, 0, len(r.Items)), Total: r.Total, TotalCapped: r.TotalCapped}
+	for _, v := range r.Items {
+		resp.Items = append(resp.Items, to{{.N.Type}}(v))
+	}
+	return c.JSON(http.StatusOK, resp)
+}
+{{else if .WebList}}
+func (h *Handler) {{pascal .N.OpList}}(c *echo.Context, params oapi.{{pascal .N.OpList}}Params) error {
+	var cursor string
+	if params.Cursor != nil {
+		cursor = *params.Cursor
+	}
+	var limit int
+	if params.Limit != nil {
+		limit = *params.Limit
+	}
+	items, next, err := h.service.List(c.Request().Context(), cursor, limit)
+	if err != nil {
+		return err
+	}
+	resp := oapi.{{.N.Type}}List{Items: make([]oapi.{{.N.Type}}, 0, len(items))}
+	for _, v := range items {
+		resp.Items = append(resp.Items, to{{.N.Type}}(v))
+	}
+	if next != "" {
+		resp.NextCursor = &next
+	}
+	return c.JSON(http.StatusOK, resp)
+}
+{{end}}
+{{- if or .Admin .WebGet}}
+func (h *Handler) {{pascal .N.OpGet}}(c *echo.Context, id oapi.ID) error {
+	v, err := h.service.Get(c.Request().Context(), id.String())
+	if err != nil {
+		return err
+	}
+	return c.JSON(http.StatusOK, to{{.N.Type}}(v))
+}
+{{end}}
+{{- if .HasCreate}}
+func (h *Handler) {{pascal .N.OpCreate}}(c *echo.Context) error {
+	var req oapi.{{pascal .N.OpCreate}}JSONRequestBody
+	if err := c.Bind(&req); err != nil {
+		return err
+	}
+	if err := c.Validate(&req); err != nil {
+		return err
+	}
+	v, err := h.service.Create(c.Request().Context(), domain.{{.N.Type}}Create{
+{{- range .Create}}
+		{{.Go}}: {{.FromReq (printf "req.%s" .Go) (not .InCreateRequired)}},
+{{- end}}
+	})
+	if err != nil {
+		return err
+	}
+	return c.JSON(http.StatusCreated, to{{.N.Type}}(v))
+}
+{{end}}
+{{- if .HasUpdate}}
+func (h *Handler) {{pascal .N.OpUpdate}}(c *echo.Context, id oapi.ID) error {
+	var req oapi.{{pascal .N.OpUpdate}}JSONRequestBody
+	if err := c.Bind(&req); err != nil {
+		return err
+	}
+	if err := c.Validate(&req); err != nil {
+		return err
+	}
+	v, err := h.service.Update(c.Request().Context(), id.String(), domain.{{.N.Type}}Update{
+{{- range .Update}}
+		{{.Go}}: {{.FromReq (printf "req.%s" .Go) (not .InBodyRequired)}},
+{{- end}}
+		Version: req.Version,
+	})
+	if err != nil {
+		return err
+	}
+	return c.JSON(http.StatusOK, to{{.N.Type}}(v))
+}
+{{end}}
+{{- if .HasDelete}}
+func (h *Handler) {{pascal .N.OpDelete}}(c *echo.Context, id oapi.ID) error {
+	if err := h.service.Delete(c.Request().Context(), id.String()); err != nil {
+		return err
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+{{end}}
+{{- range .Actions}}
+func (h *Handler) {{pascal .Op}}(c *echo.Context, id oapi.ID) error {
+{{- if .Input}}
+	var req oapi.{{pascal .Op}}JSONRequestBody
+	if err := c.Bind(&req); err != nil {
+		return err
+	}
+	if err := c.Validate(&req); err != nil {
+		return err
+	}
+{{- end}}
+	v, err := h.service.{{.Go}}(c.Request().Context(), id.String(){{range .Input}}, {{.FromReq (printf "req.%s" .Go) (not .InputRequired)}}{{end}})
+	if err != nil {
+		return err
+	}
+	return c.JSON(http.StatusOK, to{{$.N.Type}}(v))
+}
+{{end}}
+{{- if .NeedDeref}}
+func deref[T any](p *T, def T) T {
+	if p == nil {
+		return def
+	}
+	return *p
+}
+{{end}}
+{{- if .NeedDateOf}}
+func dateOf(d *openapi_types.Date) *time.Time {
+	if d == nil {
+		return nil
+	}
+	return &d.Time
+}
+{{end}}
+{{- if .NeedDateRef}}
+func dateRef(t *time.Time) *openapi_types.Date {
+	if t == nil {
+		return nil
+	}
+	return &openapi_types.Date{Time: *t}
+}
+{{end}}
+var _ oapi.ServerInterface = (*Handler)(nil)

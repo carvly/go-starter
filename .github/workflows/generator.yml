@@ -1,0 +1,153 @@
+name: Generator
+
+# 夹具 CI（docs/agents/generator.md 的"夹具与 CI"）：tools/gen/testdata 里的每份夹具和两份示例，
+# 在仓库的临时副本里生成，然后跑 vet、全部测试、NotImplemented 断言、lint、前端检查（后台资源）、删除演练
+# 和 Postgres 上的契约测试。模板跟不上代码库的约定时失败。生成的代码依赖公共包和前端零件，所以它们变化时也运行；
+# 另外每周一定时跑一次，兜住约定在别处变化的情况。
+#
+# 每份描述文件的检查都要几分钟，按编号分成 7 片并行跑（GEN_FIXTURE_SHARD=i/7，见
+# tools/gen/fixture_test.go），总耗时约等于最慢的一份。新增描述文件不用改这里：每份都一定落在
+# 某一片里，多于 7 份时有的分片跑两份。
+#
+# 分片各自从零编译 golangci-lint、从零做 lint 分析会让每片多花一两分钟（仓库私有，按 job 计费）。
+# warm-cache 先准备好 Go 依赖、编译好的测试、golangci-lint 及其分析缓存，存成一份按 Go 版本、
+# go.sum 和 Makefile（golangci-lint 版本）命名的缓存；这三者不变时直接命中，几十秒就结束。
+# 各分片只恢复这份缓存，不再各自保存。
+on:
+  push:
+    branches: [main]
+    paths:
+      - "tools/gen/**"
+      - "internal/kit/page/**"
+      - "internal/platform/postgres/**"
+      - "internal/platform/httpserver/**"
+      - "web/admin/src/lib/**"
+      - "web/admin/src/components/**"
+      - "web/admin/src/features/auth/**"
+      - "web/admin/src/api/client.ts"
+      - "web/admin/src/api/errors.ts"
+      - "web/admin/scripts/gen-routes.ts"
+      - "web/admin/package.json"
+      - "web/admin/pnpm-lock.yaml"
+      - "web/admin/tsconfig*.json"
+      - "web/admin/vite.config.ts"
+      - "web/admin/knip.json"
+      - "web/admin/.oxlintrc.json"
+      - "web/admin/.oxfmtrc.json"
+      - "web/admin/.editorconfig"
+      - "api/admin.yaml"
+      - "api/openapi.yaml"
+      - ".golangci.yml"
+      - ".github/workflows/generator.yml"
+  pull_request:
+    paths:
+      - "tools/gen/**"
+      - "internal/kit/page/**"
+      - "internal/platform/postgres/**"
+      - "internal/platform/httpserver/**"
+      - "web/admin/src/lib/**"
+      - "web/admin/src/components/**"
+      - "web/admin/src/features/auth/**"
+      - "web/admin/src/api/client.ts"
+      - "web/admin/src/api/errors.ts"
+      - "web/admin/scripts/gen-routes.ts"
+      - "web/admin/package.json"
+      - "web/admin/pnpm-lock.yaml"
+      - "web/admin/tsconfig*.json"
+      - "web/admin/vite.config.ts"
+      - "web/admin/knip.json"
+      - "web/admin/.oxlintrc.json"
+      - "web/admin/.oxfmtrc.json"
+      - "web/admin/.editorconfig"
+      - "api/admin.yaml"
+      - "api/openapi.yaml"
+      - ".golangci.yml"
+      - ".github/workflows/generator.yml"
+  schedule:
+    - cron: "0 3 * * 1"
+
+# GITHUB_TOKEN 只给读权限：这些 job 都不需要写仓库。
+permissions:
+  contents: read
+
+# 同一个 PR 连续推送时取消旧的运行；main 上的每次推送都跑完。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  warm-cache:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      key: ${{ steps.key.outputs.key }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - id: go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.27"
+          cache: false
+      - id: key
+        run: echo "key=gen-fixture-${{ runner.os }}-${{ runner.arch }}-go${{ steps.go.outputs.go-version }}-${{ hashFiles('go.sum', 'Makefile') }}" >> "$GITHUB_OUTPUT"
+      - id: cache
+        uses: actions/cache@v6
+        with:
+          key: ${{ steps.key.outputs.key }}
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+            ~/.cache/golangci-lint
+      # 和夹具测试做同样的事：编译全部代码和测试（含 integration、genfixture tag），用 Makefile 固定的
+      # 版本跑一次 golangci-lint（同一个模块路径和版本，编译结果和分析缓存可以复用）。
+      - name: 预热 Go 和 golangci-lint 的缓存
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          go build ./...
+          go vet -tags=integration,genfixture ./...
+          go test -tags=integration,genfixture -run '^$' ./...
+          make lint
+
+  fixtures:
+    name: fixtures (${{ matrix.shard }}/7)
+    needs: warm-cache
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      # 一片失败不取消其它片：每片对应不同的描述文件，要一次看到全部失败。
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.27"
+          cache: false
+      - uses: actions/cache/restore@v6
+        with:
+          key: ${{ needs.warm-cache.outputs.key }}
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+            ~/.cache/golangci-lint
+      # 后台资源生成前端页面，要跑前端的检查。pnpm 版本取自 package.json 的 packageManager。
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: web/admin/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: web/admin/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: web/admin
+      - name: 生成本片的夹具并跑全部检查
+        env:
+          GEN_FIXTURE_INTEGRATION: "1"
+          GEN_FIXTURE_SHARD: ${{ matrix.shard }}/7
+        run: go test -tags genfixture -timeout 20m -v ./tools/gen/

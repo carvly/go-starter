@@ -1,0 +1,3 @@
+  - name: {{.N.Tag}}
+    summary: {{yq .D.Title}}
+    description: {{yq (printf "%s（internal/modules/%s）" (or .D.Description .D.Title) .N.Module)}}

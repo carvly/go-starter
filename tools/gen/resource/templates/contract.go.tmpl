@@ -1,0 +1,207 @@
+package domaintest
+
+import (
+	"context"
+	"errors"
+	"reflect"
+	"testing"
+	"time"
+	"uuid"
+
+	"{{.GoMod}}/internal/kit/page"
+	"{{.GoMod}}/internal/modules/{{.N.Module}}/domain"
+)
+
+// RunRepositoryContract 是 domain.Repository 的行为契约，内存 fake 和 Postgres 实现跑同一套用例。
+// newRepo 每次返回一个空仓库。
+func RunRepositoryContract(t *testing.T, newRepo func(t *testing.T) domain.Repository) {
+	ctx := context.Background()
+	create := func(t *testing.T, repo domain.Repository, v *domain.{{.N.Type}}) *domain.{{.N.Type}} {
+		t.Helper()
+		if err := repo.Create(ctx, v); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+
+	t.Run("Valid{{.N.Type}} 的每个字段都有值，Create 后 GetByID 读回相同的值", func(t *testing.T) {
+		v := Valid{{.N.Type}}()
+		rv := reflect.ValueOf(v).Elem()
+		for i := range rv.NumField() {
+			if name := rv.Type().Field(i).Name; !generated[name] && rv.Field(i).IsZero() {
+				t.Errorf("Valid{{.N.Type}} 的 %s 是零值：加了字段之后在 domaintest/sample.go 里补上", name)
+			}
+		}
+		repo := newRepo(t)
+		create(t, repo, v)
+		got, err := repo.GetByID(ctx, v.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertSame(t, v, got)
+		if _, err := repo.GetByID(ctx, uuid.NewV7().String()); !errors.Is(err, domain.ErrNotFound) {
+			t.Fatalf("不存在时 error = %v, want ErrNotFound", err)
+		}
+	})
+{{- range .Unique}}
+
+	t.Run("{{.Name}} 重复时返回 {{.ErrTaken}}", func(t *testing.T) {
+		repo := newRepo(t)
+		a := create(t, repo, Valid{{$.N.Type}}())
+		b := Valid{{$.N.Type}}()
+		b.{{.Go}} = a.{{.Go}}
+		if err := repo.Create(ctx, b); !errors.Is(err, domain.{{.ErrTaken}}) {
+			t.Fatalf("error = %v, want {{.ErrTaken}}", err)
+		}
+	})
+{{- end}}
+{{if .Admin}}
+	t.Run("List 分页、总数和排序", func(t *testing.T) {
+		repo := newRepo(t)
+		for range 3 {
+			create(t, repo, Valid{{.N.Type}}())
+		}
+		p, err := page.New(1, 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, field := range domain.SortFields {
+			for _, desc := range []bool{false, true} {
+				r, err := repo.List(ctx, domain.{{.N.Type}}Filter{}, page.Sort{Field: field, Desc: desc}, p)
+				if err != nil || r.Total != 3 || r.TotalCapped || len(r.Items) != 2 {
+					t.Fatalf("按 %s 排序 = %d 条 / 总数 %d，err = %v", field, len(r.Items), r.Total, err)
+				}
+				if c := compare(r.Items[0], r.Items[1], field); (desc && c < 0) || (!desc && c > 0) {
+					t.Errorf("按 %s 排序（倒序 %v）的顺序不对", field, desc)
+				}
+			}
+		}
+	})
+{{- else}}
+	t.Run("List 分页：cursor 能翻到最后一页", func(t *testing.T) {
+		repo := newRepo(t)
+		for range 3 {
+			create(t, repo, Valid{{.N.Type}}())
+		}
+		page1, next, err := repo.List(ctx, "", 2)
+		if err != nil || len(page1) != 2 || next == "" {
+			t.Fatalf("第一页 = %d 条, next = %q, err = %v", len(page1), next, err)
+		}
+		page2, next2, err := repo.List(ctx, next, 2)
+		if err != nil || len(page2) != 1 || next2 != "" {
+			t.Fatalf("第二页 = %d 条, next = %q, err = %v", len(page2), next2, err)
+		}
+		if _, _, err := repo.List(ctx, "not-a-valid-cursor!!", 10); !errors.Is(err, domain.ErrInvalidCursor) {
+			t.Fatalf("非法 cursor error = %v, want ErrInvalidCursor", err)
+		}
+	})
+{{- end}}
+{{- if .HasUpdate}}
+
+	t.Run("Update 在 version 是最新时修改并加 1，否则返回 ErrConflict", func(t *testing.T) {
+		repo := newRepo(t)
+		v := create(t, repo, Valid{{.N.Type}}())
+		cur, err := repo.GetByID(ctx, v.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		in := UpdateFrom(Valid{{.N.Type}}())
+		in.Version = cur.Version
+		got, err := repo.Update(ctx, v.ID, in)
+		if err != nil || got.Version != cur.Version+1 {
+			t.Fatalf("Update = %+v, %v", got, err)
+		}
+		saved, err := repo.GetByID(ctx, v.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+{{- range .Update}}
+		if !same(in.{{.Go}}, saved.{{.Go}}) {
+			t.Errorf("Update 后读回的 {{.Name}} = %v, want %v", saved.{{.Go}}, in.{{.Go}})
+		}
+{{- end}}
+		if _, err := repo.Update(ctx, v.ID, in); !errors.Is(err, domain.ErrConflict) {
+			t.Fatalf("旧 version error = %v, want ErrConflict", err)
+		}
+		if _, err := repo.Update(ctx, uuid.NewV7().String(), in); !errors.Is(err, domain.ErrNotFound) {
+			t.Fatalf("不存在时 error = %v, want ErrNotFound", err)
+		}
+	})
+{{- end}}
+{{- if .HasDelete}}
+
+	t.Run("Delete 后读不到，再删返回 ErrNotFound", func(t *testing.T) {
+		repo := newRepo(t)
+		v := create(t, repo, Valid{{.N.Type}}())
+		if err := repo.Delete(ctx, v.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := repo.GetByID(ctx, v.ID); !errors.Is(err, domain.ErrNotFound) {
+			t.Fatalf("删除后 error = %v, want ErrNotFound", err)
+		}
+		if err := repo.Delete(ctx, v.ID); !errors.Is(err, domain.ErrNotFound) {
+			t.Fatalf("再删 error = %v, want ErrNotFound", err)
+		}
+	})
+{{- end}}
+{{- range $a := .Actions}}{{if .Declarative}}
+
+	t.Run("动作{{.Title}}", func(t *testing.T) {
+		repo := newRepo(t)
+		v := Valid{{$.N.Type}}()
+{{- range .Whens}}
+		v.{{.Field.Go}} = {{$.SetValue .FirstSet}}
+{{- end}}
+		create(t, repo, v)
+		{{if .HasConstSet}}got{{else}}_{{end}}, err := repo.{{.Go}}(ctx, v.ID{{range .Sets}}{{if .Param}}, {{.Param.Sample "" "0"}}{{end}}{{end}})
+		if err != nil {
+			t.Fatal(err)
+		}
+{{- range .Sets}}{{if not .Param}}
+		if {{.Mismatch "got"}} {
+			t.Errorf("{{.Field.Name}} = %v, want %v", got.{{.Field.Go}}, {{.Const}})
+		}
+{{- end}}{{end}}
+{{- with .FirstOther}}
+		w := Valid{{$.N.Type}}()
+		w.{{.Field.Go}} = {{$.SetValue .OtherSet}}
+		create(t, repo, w)
+		if _, err := repo.{{$a.Go}}(ctx, w.ID{{range $a.Sets}}{{if .Param}}, {{.Param.Sample "" "0"}}{{end}}{{end}}); !errors.Is(err, domain.ErrInvalidState) {
+			t.Fatalf("条件不满足时 error = %v, want ErrInvalidState", err)
+		}
+{{- end}}
+		if _, err := repo.{{.Go}}(ctx, uuid.NewV7().String(){{range .Sets}}{{if .Param}}, {{.Param.Sample "" "0"}}{{end}}{{end}}); !errors.Is(err, domain.ErrNotFound) {
+			t.Fatalf("不存在时 error = %v, want ErrNotFound", err)
+		}
+	})
+{{- end}}{{end}}
+}
+
+// generated 是由 Repository 填写的字段，夹具里可以是零值，比较时也跳过。
+var generated = map[string]bool{"CreatedAt": true, "UpdatedAt": true, "Version": true}
+
+// assertSame 逐个字段比较；时间按时刻比较（读回的时区可能不同）。
+func assertSame(t *testing.T, want, got *domain.{{.N.Type}}) {
+	t.Helper()
+	w, g := reflect.ValueOf(want).Elem(), reflect.ValueOf(got).Elem()
+	for i := range w.NumField() {
+		name := w.Type().Field(i).Name
+		if generated[name] {
+			continue
+		}
+		if a, b := w.Field(i).Interface(), g.Field(i).Interface(); !same(a, b) {
+			t.Errorf("%s = %v, want %v", name, b, a)
+		}
+	}
+}
+
+func same(a, b any) bool {
+	switch a := a.(type) {
+	case time.Time:
+		return a.Equal(b.(time.Time))
+	case *time.Time:
+		b := b.(*time.Time)
+		return (a == nil) == (b == nil) && (a == nil || a.Equal(*b))
+	}
+	return reflect.DeepEqual(a, b)
+}

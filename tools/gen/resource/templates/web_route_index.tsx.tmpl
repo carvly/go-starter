@@ -1,0 +1,17 @@
+import { createFileRoute } from "@tanstack/react-router";
+import { {{.NavIcon}} as NavIcon } from "lucide-react";
+
+import { {{.ListMeta}} } from "@/api/meta.gen";
+import { page } from "@/features/auth/guard";
+import { {{.PageComponent}} } from "@/features/{{.Feature}}/list-page";
+
+export const Route = createFileRoute("/_authed{{.Route}}/")({
+  ...page({ permission: "{{.Permission "read"}}", nav: { title: {{js .D.Title}}, icon: NavIcon, group: {{js .NavGroup}}, order: {{.NavOrder}} } }),
+  // 筛选条件不合法时丢掉，不报错。
+  validateSearch: {{.ListMeta}}.search,
+  component: function {{pascal .N.Plural}}() {
+    const filters = Route.useSearch();
+    const navigate = Route.useNavigate();
+    return <{{.PageComponent}} filters={filters} onChange={(f) => void navigate({ search: f, replace: true })} />;
+  },
+});

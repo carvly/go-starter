@@ -1,0 +1,1506 @@
+openapi: 3.2.0
+info:
+  title: go-starter Admin API
+  version: "1.0.0"
+  license:
+    name: MIT
+    identifier: MIT
+  description: |
+    后台接入面的 spec，与 openapi.yaml（前台）分开：两份 spec 各生成一份服务端
+    代码和一个前端客户端，前台的产物里不会出现任何后台接口。
+    每个 operation 用 tag 归属到一个业务模块，各模块用 oapi-codegen 的
+    include-tags 只生成自己的那部分（internal/modules/<m>/adminapi/oapi/）。
+    每个 operation 必须声明 x-permission：`<资源>:<动作>` 格式的权限码，
+    或保留值 public（不需要登录，只用于员工登录）、authenticated（需要登录、
+    不需要权限码）、superadmin（只有超级管理员）。路由与 spec 的一致性、
+    x-permission 的合法性由 internal/app 的测试检查。
+    后台 server 只在配置了 HTTP_ADMIN_ADDR 时启动，前台端口上没有 /admin/v1。
+
+servers:
+  - url: /admin/v1
+
+tags:
+  - name: staff
+    summary: 员工
+    description: 员工账号、会话、角色权限、操作日志（internal/modules/staff）
+  - name: users
+    summary: "用户"
+    description: "前台用户。账号由登录创建，后台只能查看、停用和启用（internal/modules/auth）"
+
+security:
+  - staffSession: []
+
+paths:
+  /auth/login:
+    post:
+      operationId: staffLogin
+      tags: [staff]
+      summary: 员工登录
+      description: |
+        成功后下发会话 cookie（__Host-admin_session，HttpOnly、Secure、SameSite=Strict），
+        页面 JS 接触不到任何凭据。用户名不存在、密码错误、账号停用返回完全相同的 401
+        invalid_credentials，不暴露账号是否存在；临时密码过期（密码正确时才会返回）是 401
+        temporary_password_expired。同一用户名（不管账号是否存在）在同一 IP 连续失败 5 次后
+        进入等待，从 30 秒起逐次翻倍，最长 15 分钟；等待期内返回 429 login_throttled，
+        retry_after 是剩余秒数。
+      security: []
+      x-permission: public
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StaffLoginRequest"
+      responses:
+        "200":
+          description: 登录成功，响应头带 Set-Cookie
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Me"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+
+  /auth/logout:
+    post:
+      operationId: staffLogout
+      tags: [staff]
+      summary: 登出（吊销当前会话）
+      x-permission: authenticated
+      responses:
+        "204":
+          description: 已登出，响应头清除会话 cookie
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /me:
+    get:
+      operationId: getMe
+      tags: [staff]
+      summary: 我的信息
+      x-permission: authenticated
+      responses:
+        "200":
+          description: 当前员工
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Me"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /me/permissions:
+    get:
+      operationId: getMyPermissions
+      tags: [staff]
+      summary: 我的权限码
+      description: 前端按它显示菜单和按钮。超级管理员返回全部权限码。
+      x-permission: authenticated
+      responses:
+        "200":
+          description: 当前员工的有效权限码
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MyPermissions"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /me/password:
+    put:
+      operationId: changeMyPassword
+      tags: [staff]
+      summary: 改我的密码
+      description: 成功后吊销除当前会话以外的全部会话，并解除"必须改密"的限制。
+      x-permission: authenticated
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChangePasswordRequest"
+      responses:
+        "204":
+          description: 已修改
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /me/sessions:
+    get:
+      operationId: listMySessions
+      tags: [staff]
+      summary: 我的登录设备（最近 50 个会话，含已失效的）
+      x-permission: authenticated
+      responses:
+        "200":
+          description: 会话列表，按登录时间倒序
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /me/sessions/{id}:
+    delete:
+      operationId: revokeMySession
+      tags: [staff]
+      summary: 吊销我的一个会话
+      x-permission: authenticated
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      responses:
+        "204":
+          description: 已吊销
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /accounts:
+    get:
+      operationId: listAccounts
+      tags: [staff]
+      summary: 员工列表
+      x-permission: superadmin
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: 按创建时间倒序
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      operationId: createAccount
+      tags: [staff]
+      summary: 创建员工
+      description: |
+        设一个临时密码（有效期由 STAFF_TEMP_PASSWORD_TTL 决定，默认 24 小时），只在响应里出现
+        这一次；员工首次登录后必须改密。
+      x-permission: superadmin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAccountRequest"
+      responses:
+        "201":
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreatedAccount"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /accounts/{id}:
+    get:
+      operationId: getAccount
+      tags: [staff]
+      summary: 员工详情（含绑定的角色）
+      x-permission: superadmin
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      responses:
+        "200":
+          description: 员工
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountDetail"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /accounts/{id}/disable:
+    post:
+      operationId: disableAccount
+      tags: [staff]
+      summary: 停用员工（已有会话立即失效；不能停用自己，也不能停用最后一个 active 的超级管理员）
+      x-permission: superadmin
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      responses:
+        "204":
+          description: 已停用
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /accounts/{id}/enable:
+    post:
+      operationId: enableAccount
+      tags: [staff]
+      summary: 启用员工
+      x-permission: superadmin
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      responses:
+        "204":
+          description: 已启用
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /accounts/{id}/reset-password:
+    post:
+      operationId: resetAccountPassword
+      tags: [staff]
+      summary: 重设员工密码
+      description: 设一个新的临时密码（只在响应里出现这一次），并吊销对方全部会话。
+      x-permission: superadmin
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      responses:
+        "200":
+          description: 新的临时密码
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TemporaryPassword"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /accounts/{id}/revoke-sessions:
+    post:
+      operationId: revokeAccountSessions
+      tags: [staff]
+      summary: 吊销员工的全部会话（踢下线）
+      x-permission: superadmin
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      responses:
+        "204":
+          description: 已吊销
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /accounts/{id}/super-admin:
+    put:
+      operationId: setAccountSuperAdmin
+      tags: [staff]
+      summary: 设置或取消超级管理员（不能取消自己的，至少留下一个 active 的超级管理员）
+      x-permission: superadmin
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetSuperAdminRequest"
+      responses:
+        "204":
+          description: 已设置
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /accounts/{id}/roles:
+    put:
+      operationId: setAccountRoles
+      tags: [staff]
+      summary: 设置员工的角色（整体替换）
+      x-permission: superadmin
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetAccountRolesRequest"
+      responses:
+        "204":
+          description: 已设置
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /roles:
+    get:
+      operationId: listRoles
+      tags: [staff]
+      summary: 角色列表（含权限码）
+      x-permission: superadmin
+      responses:
+        "200":
+          description: 按创建时间排序
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RoleList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      operationId: createRole
+      tags: [staff]
+      summary: 创建角色
+      x-permission: superadmin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RoleRequest"
+      responses:
+        "201":
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Role"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /roles/{id}:
+    put:
+      operationId: updateRole
+      tags: [staff]
+      summary: 修改角色名和说明
+      x-permission: superadmin
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RoleRequest"
+      responses:
+        "200":
+          description: 修改后的角色
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Role"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+    delete:
+      operationId: deleteRole
+      tags: [staff]
+      summary: 删除角色（同时解除它和员工的绑定）
+      x-permission: superadmin
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      responses:
+        "204":
+          description: 已删除
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /roles/{id}/permissions:
+    put:
+      operationId: setRolePermissions
+      tags: [staff]
+      summary: 设置角色的权限码（整体替换）
+      description: 只接受 GET /permissions 列出的权限码。
+      x-permission: superadmin
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetRolePermissionsRequest"
+      responses:
+        "200":
+          description: 修改后的角色
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Role"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /permissions:
+    get:
+      operationId: listPermissions
+      tags: [staff]
+      summary: 全部可授予的权限码（取自本 spec 的 x-permission，按模块分组排序）
+      x-permission: superadmin
+      responses:
+        "200":
+          description: 权限码列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PermissionList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /audit-logs:
+    get:
+      operationId: listAuditLogs
+      tags: [staff]
+      summary: 操作日志
+      description: 按时间倒序。时间范围是半开区间 [from, to)。
+      x-permission: superadmin
+      parameters:
+        - name: staff_id
+          in: query
+          required: false
+          description: 只看某个员工的日志
+          schema:
+            type: string
+            format: uuid
+        - name: from
+          in: query
+          required: false
+          description: 起始时间（含）
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          required: false
+          description: 结束时间（不含）
+          schema:
+            type: string
+            format: date-time
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: 日志列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditLogList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /users:
+    get:
+      operationId: listUsers
+      tags: [users]
+      summary: "用户列表"
+      description: "页码分页，默认按 created_at 倒序排序。"
+      x-permission: user:read
+      parameters:
+        - name: q
+          in: query
+          required: false
+          description: "昵称包含这个关键字（不区分大小写）"
+          schema:
+            type: string
+        - name: status
+          in: query
+          required: false
+          description: "状态，多个用逗号分隔，满足任一即可"
+          style: form
+          explode: false
+          schema:
+            type: array
+            items:
+              $ref: "#/components/schemas/UserStatus"
+        - name: created_at_from
+          in: query
+          required: false
+          description: "创建时间起（含）"
+          schema:
+            type: string
+            format: date-time
+        - name: created_at_to
+          in: query
+          required: false
+          description: "创建时间止（不含）"
+          schema:
+            type: string
+            format: date-time
+        - name: last_login_at_from
+          in: query
+          required: false
+          description: "最近登录时间起（含）"
+          schema:
+            type: string
+            format: date-time
+        - name: last_login_at_to
+          in: query
+          required: false
+          description: "最近登录时间止（不含）"
+          schema:
+            type: string
+            format: date-time
+        - name: sort
+          in: query
+          required: false
+          description: "排序字段，- 前缀表示倒序；默认 -created_at"
+          schema:
+            type: string
+            enum: [created_at, -created_at, last_login_at, -last_login_at]
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Size"
+      responses:
+        "200":
+          description: "用户列表"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserPage"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /users/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    get:
+      operationId: getUser
+      tags: [users]
+      summary: "用户详情"
+      x-permission: user:read
+      responses:
+        "200":
+          description: "用户详情"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /users/{id}/disable:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      operationId: disableUser
+      tags: [users]
+      summary: "停用"
+      x-permission: user:disable
+      responses:
+        "200":
+          description: "已停用，返回修改后的用户"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /users/{id}/enable:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      operationId: enableUser
+      tags: [users]
+      summary: "启用"
+      x-permission: user:enable
+      responses:
+        "200":
+          description: "已启用，返回修改后的用户"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /users/{id}/identities:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    get:
+      operationId: listUserIdentities
+      tags: [users]
+      summary: "用户的登录方式"
+      description: "手写的只读接口：登录方式由登录创建，不能在后台增删。"
+      x-permission: user:read
+      responses:
+        "200":
+          description: "登录方式列表"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserIdentityList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /users/{id}/sessions:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    get:
+      operationId: listUserSessions
+      tags: [users]
+      summary: "用户的登录会话（设备列表）"
+      description: "手写的只读接口。不返回 refresh_family 和任何 token 摘要。"
+      x-permission: user:read
+      responses:
+        "200":
+          description: "会话列表，按最后使用时间倒序"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserSessionList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /users/{id}/sessions/{sid}:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+      - name: sid
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    delete:
+      operationId: kickUserSession
+      tags: [users]
+      summary: "踢下线（吊销指定会话）"
+      x-permission: user:kick
+      responses:
+        "204":
+          description: "已吊销"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+components:
+  securitySchemes:
+    staffSession:
+      type: apiKey
+      in: cookie
+      name: __Host-admin_session
+
+  parameters:
+    ID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: 上一页响应里的 next_cursor；不传表示取第一页。
+      schema:
+        type: string
+    Limit:
+      name: limit
+      in: query
+      required: false
+      description: 默认 20，超过 100 会被服务端拉回默认值。
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    Page:
+      name: page
+      in: query
+      required: false
+      description: 页码，从 1 开始，默认 1。只能翻到前 10000 条（page_out_of_range），更后面的数据加筛选条件查。
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    Size:
+      name: size
+      in: query
+      required: false
+      description: 每页条数，默认 20，超过 100 会被服务端拉回默认值。
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+
+  responses:
+    BadRequest:
+      description: 请求参数不合法
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: 未登录、会话已失效，或登录凭据错误
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Forbidden:
+      description: |
+        没有权限（permission_denied）、必须先改密码（password_change_required）、
+        跨站请求被拒绝
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: 资源不存在
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Conflict:
+      description: 与当前状态冲突（名称已被占用、库存不足等）
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    TooManyRequests:
+      description: 需要等一段时间再试（如登录连续失败），响应头带 Retry-After
+      headers:
+        Retry-After:
+          description: 多少秒之后可以再试
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  schemas:
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          title: 错误码
+          examples: ["permission_denied"]
+          type: string
+          description: 机器可读的错误码，取值由各模块 domain/errors.go 定义。
+        message:
+          title: 错误信息
+          examples: ["permission denied"]
+          type: string
+        retry_after:
+          title: 等待秒数
+          type: integer
+          minimum: 1
+          examples: [120]
+          description: 多少秒之后可以再试，只在 429 里出现，和 Retry-After 响应头相同。
+
+    StaffLoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          title: 用户名
+          examples: ["root"]
+          type: string
+          x-oapi-codegen-extra-tags:
+            validate: "required"
+        password:
+          title: 密码
+          format: password
+          examples: ["correct-horse-battery-staple"]
+          type: string
+          x-oapi-codegen-extra-tags:
+            validate: "required"
+
+    Me:
+      type: object
+      required: [id, username, display_name, super_admin, must_change_password]
+      properties:
+        id:
+          title: ID
+          examples: ["01936f3c-2b3c-7d4e-8f5a-6b7c8d9e0f1a"]
+          type: string
+          format: uuid
+          x-go-type: string
+        username:
+          title: 用户名
+          examples: ["root"]
+          type: string
+        display_name:
+          title: 显示名
+          examples: ["管理员"]
+          type: string
+        super_admin:
+          title: 超级管理员
+          type: boolean
+        must_change_password:
+          title: 待改密
+          description: 为 true 时只能改密码、登出、查看自己
+          type: boolean
+
+    MyPermissions:
+      type: object
+      required: [permissions]
+      properties:
+        permissions:
+          title: 权限码
+          examples: [["product:read", "product:update"]]
+          type: array
+          items:
+            type: string
+
+    ChangePasswordRequest:
+      type: object
+      required: [current_password, new_password]
+      properties:
+        current_password:
+          title: 当前密码
+          format: password
+          type: string
+          x-oapi-codegen-extra-tags:
+            validate: "required"
+        new_password:
+          title: 新密码
+          format: password
+          examples: ["a-much-longer-passphrase"]
+          type: string
+          minLength: 12
+          x-oapi-codegen-extra-tags:
+            validate: "required,min=12"
+
+    Session:
+      type: object
+      required: [id, created_at, last_used_at, expires_at, ip, user_agent, current, status]
+      properties:
+        id:
+          title: ID
+          type: string
+          format: uuid
+          x-go-type: string
+        created_at:
+          title: 登录时间
+          type: string
+          format: date-time
+        last_used_at:
+          title: 最后活动
+          type: string
+          format: date-time
+        expires_at:
+          title: 过期时间
+          type: string
+          format: date-time
+        revoked_at:
+          title: 退出时间
+          description: 不存在表示未吊销
+          type: string
+          format: date-time
+        ip:
+          title: IP
+          examples: ["203.0.113.7"]
+          type: string
+        user_agent:
+          title: 设备
+          type: string
+        current:
+          title: 当前设备
+          description: 是否是发起这次请求的会话
+          type: boolean
+        status:
+          title: 状态
+          x-enum-labels:
+            active: 已登录
+            revoked: 已退出
+            expired: 已过期
+          description: |
+            active 有效；revoked 已退出（登出、被踢下线、改密或重设密码、账号停用）；
+            expired 超过绝对有效期或空闲超时。由服务端判断，前端拿不到空闲超时的配置。
+          type: string
+          enum: [active, revoked, expired]
+
+    SessionList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          title: 会话
+          type: array
+          items:
+            $ref: "#/components/schemas/Session"
+
+    Account:
+      type: object
+      required: [id, username, display_name, super_admin, must_change_password, status, created_at]
+      properties:
+        id:
+          title: ID
+          examples: ["01936f3c-2b3c-7d4e-8f5a-6b7c8d9e0f1a"]
+          type: string
+          format: uuid
+          x-go-type: string
+        username:
+          title: 用户名
+          examples: ["alice"]
+          type: string
+        display_name:
+          title: 显示名
+          examples: ["Alice"]
+          type: string
+        super_admin:
+          title: 超级管理员
+          type: boolean
+        must_change_password:
+          title: 待改密
+          type: boolean
+        status:
+          title: 状态
+          x-enum-labels:
+            active: 正常
+            disabled: 已停用
+          description: active 正常，disabled 停用
+          type: string
+          enum: [active, disabled]
+        created_by:
+          title: 创建者
+          description: 创建者的员工 ID；不存在表示由 CLI 创建
+          type: string
+          format: uuid
+          x-go-type: string
+        created_at:
+          title: 创建时间
+          type: string
+          format: date-time
+
+    AccountDetail:
+      allOf:
+        - $ref: "#/components/schemas/Account"
+        - type: object
+          required: [role_ids]
+          properties:
+            role_ids:
+              title: 角色
+              type: array
+              items:
+                type: string
+                format: uuid
+                x-go-type: string
+
+    AccountList:
+      type: object
+      required: [items]
+      properties:
+        active_super_admins:
+          title: 有效的超级管理员数
+          description: |
+            当前 active 的超级管理员数量（不受分页影响），只在第一页（不带 cursor）返回，供前端在
+            只剩 1 个时提示；只用于展示，"至少留下一个"由停用、取消标记时在锁里检查
+          type: integer
+        items:
+          title: 员工
+          type: array
+          items:
+            $ref: "#/components/schemas/AccountDetail"
+        next_cursor:
+          title: 下一页
+          type: string
+
+    CreateAccountRequest:
+      type: object
+      required: [username]
+      properties:
+        username:
+          title: 用户名
+          description: 2–64 个字符，小写字母、数字和 . _ -，不区分大小写
+          examples: ["alice"]
+          type: string
+          x-oapi-codegen-extra-tags:
+            validate: "required,max=64"
+        display_name:
+          title: 显示名
+          description: 不填时同用户名
+          examples: ["Alice"]
+          type: string
+          maxLength: 100
+          x-oapi-codegen-extra-tags:
+            validate: "omitempty,max=100"
+        super_admin:
+          title: 超级管理员
+          type: boolean
+
+    CreatedAccount:
+      type: object
+      required: [account, temporary_password, temporary_password_expires_at]
+      properties:
+        account:
+          title: 员工
+          $ref: "#/components/schemas/Account"
+        temporary_password:
+          title: 临时密码
+          description: 只出现这一次
+          type: string
+        temporary_password_expires_at:
+          title: 临时密码过期时间
+          description: 临时密码的过期时间（STAFF_TEMP_PASSWORD_TTL，默认 24 小时）
+          type: string
+          format: date-time
+
+    TemporaryPassword:
+      type: object
+      required: [temporary_password, temporary_password_expires_at]
+      properties:
+        temporary_password:
+          title: 临时密码
+          description: 只出现这一次
+          type: string
+        temporary_password_expires_at:
+          title: 临时密码过期时间
+          description: 临时密码的过期时间（STAFF_TEMP_PASSWORD_TTL，默认 24 小时）
+          type: string
+          format: date-time
+
+    SetSuperAdminRequest:
+      type: object
+      required: [super_admin]
+      properties:
+        super_admin:
+          title: 超级管理员
+          type: boolean
+
+    SetAccountRolesRequest:
+      type: object
+      required: [role_ids]
+      properties:
+        role_ids:
+          title: 角色
+          type: array
+          items:
+            type: string
+            format: uuid
+          x-go-type: "[]string"
+          x-oapi-codegen-extra-tags:
+            validate: "dive,uuid"
+
+    Role:
+      type: object
+      required: [id, name, description, permissions, created_at]
+      properties:
+        id:
+          title: ID
+          type: string
+          format: uuid
+          x-go-type: string
+        name:
+          title: 角色名
+          examples: ["商品运营"]
+          type: string
+        description:
+          title: 说明
+          x-field: text
+          type: string
+        permissions:
+          title: 权限码
+          examples: [["product:read", "product:update"]]
+          type: array
+          items:
+            type: string
+        created_at:
+          title: 创建时间
+          type: string
+          format: date-time
+
+    RoleList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          title: 角色
+          type: array
+          items:
+            $ref: "#/components/schemas/Role"
+
+    RoleRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          title: 角色名
+          examples: ["商品运营"]
+          type: string
+          maxLength: 100
+          x-oapi-codegen-extra-tags:
+            validate: "required,max=100"
+        description:
+          title: 说明
+          x-field: text
+          type: string
+
+    SetRolePermissionsRequest:
+      type: object
+      required: [permissions]
+      properties:
+        permissions:
+          title: 权限码
+          examples: [["product:read", "product:update"]]
+          type: array
+          items:
+            type: string
+          x-oapi-codegen-extra-tags:
+            validate: "dive,required"
+
+    Permission:
+      type: object
+      required: [code, tag, tag_summary, operations]
+      properties:
+        code:
+          title: 权限码
+          examples: ["product:update"]
+          type: string
+        tag:
+          title: 模块
+          description: 所属模块（admin.yaml 的 tag）
+          examples: ["products"]
+          type: string
+        tag_summary:
+          title: 模块名称
+          description: 模块的中文名（tag 的 summary）
+          examples: ["商品"]
+          type: string
+        operations:
+          title: 操作
+          description: 需要这个权限码的操作（操作的 summary）
+          examples: [["修改商品名称和单价"]]
+          type: array
+          items:
+            type: string
+
+    PermissionList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          title: 权限
+          type: array
+          items:
+            $ref: "#/components/schemas/Permission"
+
+    AuditLog:
+      type: object
+      required: [id, action, target, result, ip, request_id, created_at]
+      properties:
+        id:
+          title: ID
+          type: string
+          format: uuid
+          x-go-type: string
+        staff_id:
+          title: 员工
+          description: 不存在表示 CLI 操作或登录时账号不存在
+          type: string
+          format: uuid
+          x-go-type: string
+        action:
+          title: 动作
+          examples: ["POST /admin/v1/accounts/:id/disable"]
+          description: 请求方法 + 路由模板，或 login_succeeded、login_failed、login_throttled、cli:<命令>
+          type: string
+        target:
+          title: 目标
+          description: 路径参数（如被操作的员工 ID），没有时为空字符串
+          type: string
+        result:
+          title: 结果
+          examples: ["204"]
+          type: string
+        ip:
+          title: IP
+          type: string
+        request_id:
+          title: 请求 ID
+          type: string
+        created_at:
+          title: 时间
+          type: string
+          format: date-time
+
+    AuditLogList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          title: 日志
+          type: array
+          items:
+            $ref: "#/components/schemas/AuditLog"
+        next_cursor:
+          title: 下一页
+          type: string
+
+    PageTotal:
+      type: object
+      description: 页码分页的总数，最多数到 10000。
+      required: [total, total_capped]
+      properties:
+        total:
+          title: 总数
+          examples: [42]
+          type: integer
+          description: 符合条件的条数，超过 10000 时为 10000
+        total_capped:
+          title: 超过上限
+          type: boolean
+          description: 为 true 时实际条数超过 10000，页面显示"10000+"
+
+    UserStatus:
+      type: string
+      enum: [active, disabled, deleted]
+      x-enum-labels:
+        active: "正常"
+        disabled: "已停用"
+        deleted: "已注销"
+      description: "用户的状态"
+
+    User:
+      type: object
+      required: [id, display_name, avatar_url, status, last_login_at, signup_client, created_at, updated_at]
+      properties:
+        id:
+          title: ID
+          type: string
+          format: uuid
+          x-go-type: string
+        display_name:
+          title: "昵称"
+          type: string
+          maxLength: 64
+        avatar_url:
+          title: "头像"
+          type: string
+          maxLength: 1024
+        status:
+          title: "状态"
+          $ref: "#/components/schemas/UserStatus"
+        last_login_at:
+          title: "最近登录时间"
+          type: string
+          format: date-time
+        signup_client:
+          title: "注册客户端"
+          $ref: "#/components/schemas/UserSessionClient"
+        created_at:
+          title: 创建时间
+          type: string
+          format: date-time
+        updated_at:
+          title: 更新时间
+          type: string
+          format: date-time
+
+    UserPage:
+      allOf:
+        - $ref: "#/components/schemas/PageTotal"
+        - type: object
+          required: [items]
+          properties:
+            items:
+              title: "用户"
+              type: array
+              items:
+                $ref: "#/components/schemas/User"
+
+    IdentityProvider:
+      type: string
+      enum: [email, phone, github, google, apple, wechat]
+      x-enum-labels:
+        email: "邮箱"
+        phone: "手机号"
+        github: "GitHub"
+        google: "Google"
+        apple: "Apple"
+        wechat: "微信"
+      description: "登录方式；目前只有微信"
+
+    UserIdentity:
+      type: object
+      required: [id, provider, created_at]
+      properties:
+        id:
+          title: ID
+          type: string
+          format: uuid
+          x-go-type: string
+        provider:
+          title: "登录方式"
+          $ref: "#/components/schemas/IdentityProvider"
+        subject:
+          title: "第三方唯一 ID"
+          type: string
+          description: "该 provider 下稳定的唯一 ID：微信是 unionid"
+        last_login_at:
+          title: "最近登录时间"
+          type: string
+          format: date-time
+        created_at:
+          title: "绑定时间"
+          type: string
+          format: date-time
+
+    UserIdentityList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          title: "登录方式"
+          type: array
+          items:
+            $ref: "#/components/schemas/UserIdentity"
+
+    UserSessionClient:
+      type: string
+      enum: [web, app, miniprogram]
+      x-enum-labels:
+        web: "网页"
+        app: "App"
+        miniprogram: "小程序"
+      description: "客户端类型"
+
+    UserSession:
+      type: object
+      required: [id, client, device_name, ip, user_agent, created_at, last_used_at, expires_at]
+      properties:
+        id:
+          title: ID
+          type: string
+          format: uuid
+          x-go-type: string
+        client:
+          title: "客户端"
+          $ref: "#/components/schemas/UserSessionClient"
+        device_name:
+          title: "设备名"
+          type: string
+        ip:
+          title: "登录 IP"
+          type: string
+        user_agent:
+          title: "User-Agent"
+          type: string
+        created_at:
+          title: "登录时间"
+          type: string
+          format: date-time
+        last_used_at:
+          title: "最近使用"
+          type: string
+          format: date-time
+        expires_at:
+          title: "过期时间"
+          type: string
+          format: date-time
+
+    UserSessionList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          title: "会话"
+          type: array
+          items:
+            $ref: "#/components/schemas/UserSession"

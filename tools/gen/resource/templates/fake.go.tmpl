@@ -1,0 +1,279 @@
+// Package domaintest 提供 {{.N.Module}} 的内存 fake、夹具和 Repository 契约，供本模块和组合根的测试复用。
+package domaintest
+
+import (
+	"cmp"
+	"context"
+	"slices"
+	"strings"
+	"sync"
+	"time"
+
+	"{{.GoMod}}/internal/kit/page"
+	"{{.GoMod}}/internal/modules/{{.N.Module}}/domain"
+)
+
+// Repository 是 domain.Repository 的内存实现。
+type Repository struct {
+	mu   sync.Mutex
+	byID map[string]*domain.{{.N.Type}}
+{{- if not .Admin}}
+	order []string // 按创建倒序
+{{- end}}
+}
+
+func NewRepository() *Repository {
+	return &Repository{byID: make(map[string]*domain.{{.N.Type}})}
+}
+
+func (f *Repository) Create(_ context.Context, v *domain.{{.N.Type}}) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.unique(v); err != nil {
+		return err
+	}
+	now := time.Now()
+	v.CreatedAt, v.UpdatedAt = now, now
+{{- if .HasUpdate}}
+	v.Version = 1
+{{- end}}
+	f.byID[v.ID] = new(*v)
+{{- if not .Admin}}
+	f.order = append([]string{v.ID}, f.order...)
+{{- end}}
+	return nil
+}
+
+// unique 模拟唯一约束。
+func (f *Repository) unique(v *domain.{{.N.Type}}) error {
+{{- if .Unique}}
+	for _, o := range f.byID {
+		if o.ID == v.ID {
+			continue
+		}
+{{- range .Unique}}
+		if o.{{.Go}} == v.{{.Go}}{{if and (eq .GoType "string") (not .NotEmpty)}} && v.{{.Go}} != ""{{end}} {
+			return domain.{{.ErrTaken}}
+		}
+{{- end}}
+	}
+{{- end}}
+	return nil
+}
+
+func (f *Repository) GetByID(_ context.Context, id string) (*domain.{{.N.Type}}, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	v, ok := f.byID[id]
+	if !ok {
+		return nil, domain.ErrNotFound
+	}
+	return new(*v), nil
+}
+{{if .Admin}}
+func (f *Repository) List(_ context.Context, flt domain.{{.N.Type}}Filter, s page.Sort, p page.Request) (page.Result[*domain.{{.N.Type}}], error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var items []*domain.{{.N.Type}}
+	for _, v := range f.byID {
+		if match(v, flt) {
+			items = append(items, new(*v))
+		}
+	}
+	slices.SortFunc(items, func(a, b *domain.{{.N.Type}}) int {
+		c := cmp.Or(compare(a, b, s.Field), cmp.Compare(a.ID, b.ID))
+		if s.Desc {
+			return -c
+		}
+		return c
+	})
+	total, capped := len(items), false
+	if total > page.MaxTotal {
+		total, capped = page.MaxTotal, true
+	}
+	start := min(p.Offset(), len(items))
+	end := min(start+p.Size(), len(items))
+	return page.Result[*domain.{{.N.Type}}]{Items: items[start:end], Total: total, TotalCapped: capped}, nil
+}
+
+func match(v *domain.{{.N.Type}}, f domain.{{.N.Type}}Filter) bool {
+{{- if .Search}}
+	if f.Keyword != "" && !containsAny(f.Keyword{{range .Search}}, v.{{.Go}}{{end}}) {
+		return false
+	}
+{{- end}}
+{{- range .Filters}}
+{{- if eq .Type "enum"}}
+	if len(f.{{.Go}}) > 0 && {{if .Nullable}}(v.{{.Go}} == nil || !slices.Contains(f.{{.Go}}, *v.{{.Go}})){{else}}!slices.Contains(f.{{.Go}}, v.{{.Go}}){{end}} {
+		return false
+	}
+{{- else if eq .Type "bool"}}
+	if f.{{.Go}} != nil && *f.{{.Go}} != v.{{.Go}} {
+		return false
+	}
+{{- else}}
+	if !inRange({{if .Nullable}}v.{{.Go}}{{else}}&v.{{.Go}}{{end}}, f.{{.Go}}From, f.{{.Go}}To) {
+		return false
+	}
+{{- end}}
+{{- end}}
+	return true
+}
+
+// compare 按排序字段比较。可空的字段按 Postgres 的默认顺序：正序时 NULL 在最后。
+func compare(a, b *domain.{{.N.Type}}, field string) int {
+	switch field {
+{{- range .SortFields}}{{$f := $.SortField .}}
+	case {{q .}}:
+{{- if eq $f.Type "date" "datetime"}}
+{{- if $f.Nullable}}
+		return cmpTime(a.{{$f.Go}}, b.{{$f.Go}})
+{{- else}}
+		return a.{{$f.Go}}.Compare(b.{{$f.Go}})
+{{- end}}
+{{- else if $f.Nullable}}
+		return cmpPtr(a.{{$f.Go}}, b.{{$f.Go}})
+{{- else}}
+		return cmp.Compare(a.{{$f.Go}}, b.{{$f.Go}})
+{{- end}}
+{{- end}}
+	}
+	return 0
+}
+
+{{- if .Search}}
+
+// containsAny 模拟 ILIKE '%keyword%'：任一字段包含关键字（不区分大小写）。
+func containsAny(keyword string, values ...string) bool {
+	k := strings.ToLower(keyword)
+	for _, v := range values {
+		if strings.Contains(strings.ToLower(v), k) {
+			return true
+		}
+	}
+	return false
+}
+{{- end}}
+{{- if .FakeNeed "cmpPtr"}}
+
+func cmpPtr[T cmp.Ordered](a, b *T) int {
+	switch {
+	case a == nil && b == nil:
+		return 0
+	case a == nil:
+		return 1
+	case b == nil:
+		return -1
+	}
+	return cmp.Compare(*a, *b)
+}
+{{- end}}
+{{- if .FakeNeed "cmpTime"}}
+
+func cmpTime(a, b *time.Time) int {
+	switch {
+	case a == nil && b == nil:
+		return 0
+	case a == nil:
+		return 1
+	case b == nil:
+		return -1
+	}
+	return a.Compare(*b)
+}
+{{- end}}
+{{- if .FakeNeed "inRange"}}
+
+// inRange 报告 t 是否在半开区间 [from, to) 内；t 为 nil 时只有不筛选才算在内。
+func inRange(t, from, to *time.Time) bool {
+	if from == nil && to == nil {
+		return true
+	}
+	return t != nil && (from == nil || !t.Before(*from)) && (to == nil || t.Before(*to))
+}
+{{- end}}
+{{else}}
+func (f *Repository) List(_ context.Context, cursor string, limit int) ([]*domain.{{.N.Type}}, string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	start := 0
+	if cursor != "" {
+		i := slices.Index(f.order, cursor)
+		if i < 0 {
+			return nil, "", domain.ErrInvalidCursor
+		}
+		start = i + 1
+	}
+	end := min(start+limit, len(f.order))
+	items := make([]*domain.{{.N.Type}}, 0, end-start)
+	for _, id := range f.order[start:end] {
+		items = append(items, new(*f.byID[id]))
+	}
+	next := ""
+	if end < len(f.order) {
+		next = f.order[end-1]
+	}
+	return items, next, nil
+}
+{{end}}
+{{- if .HasUpdate}}
+func (f *Repository) Update(_ context.Context, id string, in domain.{{.N.Type}}Update) (*domain.{{.N.Type}}, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	cur, ok := f.byID[id]
+	if !ok {
+		return nil, domain.ErrNotFound
+	}
+	if cur.Version != in.Version {
+		return nil, domain.ErrConflict
+	}
+	next := *cur
+{{- range .Update}}
+	next.{{.Go}} = in.{{.Go}}
+{{- end}}
+	if err := f.unique(&next); err != nil {
+		return nil, err
+	}
+	next.Version++
+	next.UpdatedAt = time.Now()
+	f.byID[id] = &next
+	return new(next), nil
+}
+{{end}}
+{{- if .HasDelete}}
+func (f *Repository) Delete(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.byID[id]; !ok {
+		return domain.ErrNotFound
+	}
+	delete(f.byID, id)
+	return nil
+}
+{{end}}
+{{- range .Actions}}{{if .Declarative}}
+func (f *Repository) {{.Go}}(_ context.Context, id string{{range .Sets}}{{if .Param}}, {{camel .Param.Name}} {{.Param.DomainType}}{{end}}{{end}}) (*domain.{{$.N.Type}}, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	cur, ok := f.byID[id]
+	if !ok {
+		return nil, domain.ErrNotFound
+	}
+{{- range .Whens}}
+	if {{$.WhenFails . "cur"}} {
+		return nil, domain.ErrInvalidState
+	}
+{{- end}}
+	next := *cur
+{{- range .Sets}}
+	next.{{.Field.Go}} = {{if .Param}}{{camel .Param.Name}}{{else}}{{$.SetValue .}}{{end}}
+{{- end}}
+	if err := f.unique(&next); err != nil {
+		return nil, err
+	}
+	next.UpdatedAt = time.Now()
+	f.byID[id] = &next
+	return new(next), nil
+}
+{{end}}{{end}}
+var _ domain.Repository = (*Repository)(nil)

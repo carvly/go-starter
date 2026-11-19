@@ -1,0 +1,8 @@
+# 只生成 {{.N.Spec}} 中 tag={{.N.Tag}} 的操作及其引用的 schema。
+package: oapi
+generate:
+  echo5-server: true
+  models: true
+output-options:
+  include-tags: [{{.N.Tag}}]
+output: api.gen.go

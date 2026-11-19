@@ -1,0 +1,4 @@
+allowBuilds:
+  esbuild: true
+# 新发布的包至少要放 1 天才装（防供应链投毒：被劫持的版本通常几小时内就会被撤下）。
+minimumReleaseAge: 1440

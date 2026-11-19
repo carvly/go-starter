@@ -1,0 +1,9 @@
+# redocly lint 的逐条豁免（CI 的 openapi-lint 读取它）。每一条都要写明为什么规则不适用；
+# 新增条目属于规则变更，见 docs/agents/workflow.md 的"规则变更的标记"。
+api/openapi.yaml:
+  # 浏览器整页跳转的 OAuth 接口：authorize 把浏览器送去第三方授权页，callback 由第三方把
+  # 浏览器送回来、处理完再跳回前端，成功和业务失败都是 302，请求本身有问题时 400、限流 429，
+  # 不会有 2xx。
+  operation-2xx-response:
+    - '#/paths/~1auth~1oauth~1{provider}~1authorize/get/responses'
+    - '#/paths/~1auth~1oauth~1{provider}~1callback/get/responses'

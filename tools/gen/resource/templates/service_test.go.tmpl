@@ -1,0 +1,107 @@
+package domain_test
+
+import (
+	"errors"
+	"strings"
+	"testing"
+
+	"{{.GoMod}}/internal/modules/{{.N.Module}}/domain"
+	"{{.GoMod}}/internal/modules/{{.N.Module}}/domain/domaintest"
+)
+
+func newService() (*domain.Service, *domaintest.Repository) {
+	repo := domaintest.NewRepository()
+	return domain.NewService(repo), repo
+}
+
+{{- if .HasCreateRules}}
+
+// skipIfNotImplemented：rules 还没补足时，经过它们的用例先跳过，由 NotImplemented 测试负责失败。
+func skipIfNotImplemented(t *testing.T, err error) {
+	t.Helper()
+	if errors.Is(err, domain.ErrNotImplemented) {
+		t.Skip("rules 还没补足，见 NotImplemented 测试")
+	}
+}
+{{- end}}
+
+func Test{{.N.Type}}_GetNotFound(t *testing.T) {
+	svc, _ := newService()
+	if _, err := svc.Get(t.Context(), "0199f1a2-3b4c-7d5e-8f60-718293a4b5c6"); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("error = %v, want ErrNotFound", err)
+	}
+}
+{{if .HasCreate}}
+func Test{{.N.Type}}_Create(t *testing.T) {
+	svc, _ := newService()
+	in := domaintest.Valid{{.N.Type}}Create()
+	v, err := svc.Create(t.Context(), in)
+{{- if .HasCreateRules}}
+	skipIfNotImplemented(t, err)
+{{- end}}
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := svc.Get(t.Context(), v.ID)
+	if err != nil || got.ID != v.ID {
+		t.Fatalf("Get = %+v, %v", got, err)
+	}
+}
+{{- if .CreateInvalid}}
+
+func Test{{.N.Type}}_CreateValidates(t *testing.T) {
+	for name, tc := range map[string]struct {
+		mutate func(*domain.{{.N.Type}}Create)
+		want   error
+	}{
+{{- range .CreateInvalid}}
+		{{q .Name}}: {func(in *domain.{{$.N.Type}}Create) { in.{{.Field}} = {{.Value}} }, domain.{{.Err}}},
+{{- end}}
+	} {
+		t.Run(name, func(t *testing.T) {
+			svc, _ := newService()
+			in := domaintest.Valid{{$.N.Type}}Create()
+			tc.mutate(&in)
+			if _, err := svc.Create(t.Context(), in); !errors.Is(err, tc.want) {
+				t.Errorf("error = %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+{{- end}}
+{{end}}
+{{- range .Actions}}{{if not .Declarative}}
+func Test{{$.N.Type}}_{{.Go}}_NotImplemented(t *testing.T) {
+	svc, repo := newService()
+	v := domaintest.Valid{{$.N.Type}}()
+	if err := repo.Create(t.Context(), v); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.{{.Go}}(t.Context(), v.ID{{range .Input}}, {{.Sample "domaintest." "0"}}{{end}}); errors.Is(err, domain.ErrNotImplemented) {
+		t.Fatal({{q (printf "动作\"%s\"还没有实现：%s。补足 (*Service).%s 后删掉这个测试，换成覆盖每条规则和每个声明的错误的测试" .Title .Custom .Go)}})
+	}
+}
+{{end}}{{end}}
+{{- range .Rules}}
+func Test{{$.N.Type}}_Rule{{.N}}_NotImplemented(t *testing.T) {
+	svc, repo := newService()
+	var err error
+{{- if .OnCreate}}
+	_, err = svc.Create(t.Context(), domaintest.Valid{{$.N.Type}}Create())
+{{- else}}
+	v := domaintest.Valid{{$.N.Type}}()
+	if err := repo.Create(t.Context(), v); err != nil {
+		t.Fatal(err)
+	}
+{{- if .OnUpdate}}
+	_, err = svc.Update(t.Context(), v.ID, domaintest.UpdateFrom(v))
+{{- else}}
+	err = svc.Delete(t.Context(), v.ID)
+{{- end}}
+{{- end}}
+	if errors.Is(err, domain.ErrNotImplemented) {
+		t.Fatal({{q (printf "第 %d 条业务规则还没有实现：%s。补足 %s 后删掉这个测试，换成覆盖这条规则和它声明的每个错误的测试" .N .Custom .Symbol)}})
+	}
+	_ = repo // 只有 create 的规则用不到它
+}
+{{end}}

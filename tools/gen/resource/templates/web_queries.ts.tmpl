@@ -1,0 +1,124 @@
+import { keepPreviousData, queryOptions{{if .HasWrites}}, useMutation, useQueryClient{{end}} } from "@tanstack/react-query";
+import type { z } from "zod";
+
+import { api } from "@/api/client";
+import { call } from "@/api/errors";
+import { {{.ListMeta}} } from "@/api/meta.gen";
+import type { components } from "@/api/schema";
+{{- if or .UsesDayRange .UsesDateRange}}
+import { {{if .UsesDateRange}}dateRange{{end}}{{if and .UsesDateRange .UsesDayRange}}, {{end}}{{if .UsesDayRange}}dayRange{{end}} } from "@/lib/format";
+{{- end}}
+
+export type {{.N.Type}} = components["schemas"]["{{.N.Type}}"];
+
+// 筛选条件、排序和页码放在 URL 里（日期是 yyyy-mm-dd），刷新或分享链接时保留。
+export type {{.FiltersType}} = z.output<typeof {{.ListMeta}}.search>;
+
+export const {{camel .N.Plural}}Query = ({{if .FilterRanges}}{ {{range .FilterRanges}}{{.Name}}_from, {{.Name}}_to, {{end}}...filters }{{else}}filters{{end}}: {{.FiltersType}}) => {
+{{- range .FilterRanges}}
+  const {{camel .Name}} = {{if eq .Type "date"}}dateRange{{else}}dayRange{{end}}({{.Name}}_from, {{.Name}}_to);
+{{- end}}
+  const query = {
+    ...filters,
+{{- range .FilterRanges}}
+    {{.Name}}_from: {{camel .Name}}.from,
+    {{.Name}}_to: {{camel .Name}}.to,
+{{- end}}
+    page: filters.page ?? 1,
+    size: {{.ListMeta}}.pageSize,
+  };
+  return queryOptions({
+    queryKey: ["{{.Feature}}", "list", query],
+    queryFn: () => call(api.GET("{{.N.Path}}", { params: { query } })),
+    placeholderData: keepPreviousData,
+  });
+};
+
+export const {{camel .N.Resource}}Query = (id: string) =>
+  queryOptions({
+    queryKey: ["{{.Feature}}", "detail", id],
+    queryFn: () => call(api.GET("{{.N.Path}}/{id}", { params: { path: { id } } })),
+  });
+{{- if or .HasForm .Actions}}
+{{- if .HasCreate}}
+{{- with .FieldErrors "create"}}
+
+// 新建时显示在字段下的错误码 → 字段名（同时写进 mutation 的 handlesErrors）。
+export const {{FieldErrorsVar "create"}} = { {{.}} } as const;
+{{- end}}
+{{- end}}
+{{- if .HasUpdate}}
+{{- with .FieldErrors "update"}}
+
+// 修改时显示在字段下的错误码 → 字段名。
+export const {{FieldErrorsVar "update"}} = { {{.}} } as const;
+{{- end}}
+{{- end}}
+{{- range $a := .Actions}}
+{{- with $.FieldErrors $a.Name}}
+
+// "{{$a.Title}}"时显示在字段下的错误码 → 字段名。
+export const {{FieldErrorsVar $a.Name}} = { {{.}} } as const;
+{{- end}}
+{{- end}}
+
+// 写操作都让列表和详情过期。
+function use{{.N.Type}}Mutation<V, R>(fn: (v: V) => Promise<R>, handlesErrors?: readonly string[]) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: fn,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["{{.Feature}}"] }),
+    meta: { handlesErrors },
+  });
+}
+{{- if or .HasUpdate .Actions}}
+
+const path = (id: string) => ({ params: { path: { id } } });
+{{- end}}
+{{- if .HasCreate}}
+
+export const {{.Hook "create"}} = () =>
+  use{{.N.Type}}Mutation(
+    (body: components["schemas"]["Create{{.N.Type}}Request"]) => call(api.POST("{{.N.Path}}", { body })),
+    {{- with .FieldErrors "create"}}
+    Object.keys({{FieldErrorsVar "create"}}),
+    {{- end}}
+  );
+{{- end}}
+{{- if .HasUpdate}}
+
+// {{.N.Resource}}_conflict 由 FormDialog 显示在表单顶部并刷新表单。
+export const {{.Hook "update"}} = () =>
+  use{{.N.Type}}Mutation(
+    ({ id, ...body }: { id: string } & components["schemas"]["Update{{.N.Type}}Request"]) =>
+      call(api.PUT("{{.N.Path}}/{id}", { ...path(id), body })),
+    ["{{.N.Resource}}_conflict"{{with .FieldErrors "update"}}, ...Object.keys({{FieldErrorsVar "update"}}){{end}}],
+  );
+{{- end}}
+{{- range $a := .Actions}}
+
+export const {{$.ActionHook $a}} = () =>
+  use{{$.N.Type}}Mutation(
+{{- if .Input}}
+    ({ id, ...body }: { id: string } & components["schemas"]["{{pascal .Name}}{{$.N.Type}}Request"]) =>
+      call(api.POST("{{$.APIPath .}}", { ...path(id), body })),
+{{- else}}
+    (id: string) => call(api.POST("{{$.APIPath .}}", path(id))),
+{{- end}}
+{{- with $.FieldErrors $a.Name}}
+    Object.keys({{FieldErrorsVar $a.Name}}),
+{{- end}}
+  );
+{{- end}}
+{{- end}}
+{{- if .HasDelete}}
+
+// 删除成功后只让列表过期：详情页要跳走了，不再请求它（请求会因为已删除而报"不存在"）。
+export const {{.Hook "delete"}} = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => call(api.DELETE("{{.N.Path}}/{id}", { params: { path: { id } } })),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["{{.Feature}}", "list"] }),
+  });
+};
+{{- end}}

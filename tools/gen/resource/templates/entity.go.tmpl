@@ -1,0 +1,76 @@
+package domain
+
+import "time"
+{{if not .Admin}}
+// 前台列表用 cursor 分页。
+const (
+	DefaultListLimit = 20
+	MaxListLimit     = 100
+)
+{{end}}
+{{- range $f := .Enums}}
+// {{.EnumType}} 是{{$.D.Title}}的{{.Title}}。
+type {{.EnumType}} string
+
+const (
+{{- range .Values}}
+	{{.Const}} {{$f.EnumType}} = {{q .Value}} // {{.Label}}
+{{- end}}
+)
+
+// Valid 报告是不是合法的取值。
+func (v {{.EnumType}}) Valid() bool {
+	switch v {
+	case {{range $i, $v := .Values}}{{if $i}}, {{end}}{{$v.Const}}{{end}}:
+		return true
+	}
+	return false
+}
+{{end}}
+// {{.N.Type}} 是{{.D.Title}}{{if .D.Description}}：{{.D.Description}}{{end}}。
+type {{.N.Type}} struct {
+	ID string
+{{- range .Fields}}
+	{{.Go}} {{.GoType}} // {{.Title}}{{if .Nullable}}，nil 表示未填写{{end}}
+{{- end}}
+{{- if .HasUpdate}}
+	// Version 只在编辑时校验并加 1；动作不改它，所以不会让正在编辑的人频繁冲突。
+	Version int64
+{{- end}}
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+{{if .HasCreate}}
+// {{.N.Type}}Create 是新建时填写的字段。
+type {{.N.Type}}Create struct {
+{{- range .Create}}
+	{{.Go}} {{.GoType}}
+{{- end}}
+}
+{{end}}
+{{- if .HasUpdate}}
+// {{.N.Type}}Update 是编辑时提交的字段（全量），Version 是打开表单时读到的版本。
+type {{.N.Type}}Update struct {
+{{- range .Update}}
+	{{.Go}} {{.GoType}}
+{{- end}}
+	Version int64
+}
+{{end}}
+{{- if .Admin}}
+// {{.N.Type}}Filter 是后台列表的筛选条件，零值表示不筛选。
+type {{.N.Type}}Filter struct {
+{{- if .Search}}
+	Keyword string // 搜{{range $i, $f := .Search}}{{if $i}}、{{end}}{{$f.Title}}{{end}}
+{{- end}}
+{{- range .Filters}}
+{{- if eq .Type "enum"}}
+	{{.Go}} []{{.EnumType}}
+{{- else if eq .Type "bool"}}
+	{{.Go}} *bool
+{{- else}}
+	{{.Go}}From, {{.Go}}To *time.Time // 半开区间 [From, To)
+{{- end}}
+{{- end}}
+}
+{{- end}}

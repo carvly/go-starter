@@ -1,0 +1,78 @@
+# 覆盖全部字段类型、修饰和动作写法的夹具：CI 生成它并跑全部检查，模板跟不上代码库的约定时失败。
+module: fixture
+resource: widget
+title: 部件
+description: 夹具：覆盖生成器的全部写法
+display: name
+fields:
+  name:       { type: string, title: 名称, required: true, max: 50, unique: true }
+  code:       { type: string, title: 编码, required: true, min: 3, max: 32, unique: true, immutable: true }
+  alias:      { type: string, title: 别名, max: 20, unique: true, help: 可以不填，填了不能重复 }
+  remark:     { type: text, title: 备注, max: 500 }
+  quantity:   { type: int, title: 数量, required: true, min: 0, max: 1000000 }
+  rank:       { type: int, title: 排名, min: 1, max: 100 }
+  weight:     { type: int, title: 重量, default: 10, min: 0 }
+  price_cents: { type: money, title: 单价, required: true, min: 1 }
+  deposit_cents: { type: money, title: 押金 }
+  featured:   { type: bool, title: 推荐 }
+  visible:    { type: bool, title: 公开, default: true }
+  level:      { type: enum, title: 级别, values: { low: 低, mid: 中, high: 高 }, required: true }
+  color:      { type: enum, title: 颜色, values: { red: 红, blue: 蓝 } }
+  status:     { type: enum, title: 状态, values: { draft: 草稿, active: 上架, archived: 归档 }, default: draft, readonly: true }
+  starts_on:  { type: date, title: 开始日期, required: true }
+  ends_on:    { type: date, title: 结束日期 }
+  published_at: { type: datetime, title: 发布时间, readonly: true }
+  reviewed_at: { type: datetime, title: 审核时间 }
+rules:
+  - on: [create, update]
+    custom: 结束日期不能早于开始日期
+    errors:
+      invalid_period: { kind: invalid, message: 结束日期不能早于开始日期, field: ends_on }
+  - on: [delete]
+    custom: 上架中的部件不能删除，先归档
+    errors:
+      still_active: { kind: conflict, message: 上架中的部件不能删除，先归档 }
+indexes:
+  - columns: [status, -created_at]
+    for: 后台按状态筛选并按创建时间倒序：WHERE status = ANY($1) ORDER BY created_at DESC, id DESC
+  - columns: [rank, id]
+    for: 后台按排名排序：ORDER BY rank, id
+  - columns: [starts_on]
+    for: 前台列出已上架的部件：WHERE status = 'active' ORDER BY starts_on
+    where: status = 'active'
+admin:
+  operations: [create, update, delete]
+  list:
+    columns: [name, code, level, status, quantity, price_cents, starts_on, created_at]
+    search: [name, code, remark]
+    filter: [level, color, status, featured, starts_on, reviewed_at, created_at]
+    sort: [name, quantity, rank, price_cents, starts_on, ends_on, reviewed_at, created_at]
+    default_sort: -created_at
+  actions:
+    publish:
+      title: 上架
+      set: { status: active }
+      when: { status: [draft, archived] }
+      confirm: 上架后前台可以看到
+    archive: { title: 归档, set: { status: archived }, when: { status: active } }
+    hide: { title: 隐藏, set: { visible: false }, when: { visible: true } }
+    rename:
+      title: 改名
+      input: { name: { like: name, title: 新名称 } }
+      set: { name: $name }
+    recolor:
+      title: 改颜色
+      input: { color: { like: color } }
+      set: { color: $color }
+    adjust_quantity:
+      title: 调整数量
+      input:
+        delta: { type: int, title: 增减量, required: true, min: -1000000, max: 1000000 }
+        reason: { type: string, title: 原因, max: 100 }
+      custom: >-
+        数量加上 delta，结果必须在 0 到 100 万之间，否则不改并返回对应的错误；
+        与其它调整并发时不能丢失更新
+      when: { status: active }
+      errors:
+        insufficient_quantity: { kind: conflict, message: 数量不足：调整后不能小于 0, field: delta }
+        quantity_too_large: { kind: conflict, message: 调整后数量不能超过 100 万, field: delta }

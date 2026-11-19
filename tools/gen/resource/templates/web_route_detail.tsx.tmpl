@@ -1,0 +1,14 @@
+import { createFileRoute } from "@tanstack/react-router";
+
+import { page } from "@/features/auth/guard";
+import { {{.DetailComponent}} } from "@/features/{{.Feature}}/detail";
+import { {{camel .N.Resource}}Query } from "@/features/{{.Feature}}/queries";
+
+export const Route = createFileRoute("/_authed{{.Route}}/$id")({
+  ...page({ permission: "{{.Permission "read"}}" }),
+  loader: ({ context, params }) => context.queryClient.ensureQueryData({{camel .N.Resource}}Query(params.id)),
+  component: function {{.N.Type}}Detail() {
+    const { id } = Route.useParams();
+    return <{{.DetailComponent}} id={id} />;
+  },
+});

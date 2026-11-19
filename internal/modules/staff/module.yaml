@@ -1,0 +1,15 @@
+web_paths:
+  - web/admin/src/features/auth
+  - web/admin/src/features/staff
+  - web/admin/src/features/roles
+  - web/admin/src/features/audit-log
+  - web/admin/src/features/settings
+  - web/admin/src/features/home
+  - web/admin/src/routes/login.tsx
+  - web/admin/src/routes/change-password.tsx
+  - web/admin/src/routes/_authed/index.tsx
+  - web/admin/src/routes/_authed/accounts
+  - web/admin/src/routes/_authed/roles.tsx
+  - web/admin/src/routes/_authed/audit-logs.tsx
+  - web/admin/src/routes/_authed/settings.tsx
+  - web/admin/e2e/admin.spec.ts

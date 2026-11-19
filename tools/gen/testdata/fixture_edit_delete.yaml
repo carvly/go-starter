@@ -1,0 +1,29 @@
+# 只有修改和删除（没有新建）：唯一字段、创建后不能改的枚举、带 default 的金额、写唯一字段的改名动作、
+# like 枚举的参数，confirm 里有引号、& 和尖括号。
+module: fixtureed
+resource: gadget
+title: 器件
+description: 夹具：只有修改和删除
+display: name
+fields:
+  name:  { type: string, title: 名称, required: true, max: 50, unique: true }
+  kind:  { type: enum, title: 种类, values: { a: 甲类, b: 乙类 }, required: true, immutable: true }
+  tier:  { type: enum, title: 档次, values: { low: 低, high: 高 } }
+  price_cents: { type: money, title: 价格, default: 100 }
+indexes:
+  - columns: [-created_at, -id]
+    for: 后台列表的默认排序：ORDER BY created_at DESC, id DESC LIMIT/OFFSET
+admin:
+  operations: [update, delete]
+  list:
+    columns: [name, kind, tier, price_cents]
+  actions:
+    rename:
+      title: 改名
+      input: { new_name: { like: name, title: 新名称 } }
+      set: { name: $new_name }
+      confirm: 改名后旧名称"立即"失效，R&D <慎用>
+    retier:
+      title: 调档
+      input: { pick: { like: tier } }
+      set: { tier: $pick }

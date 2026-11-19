@@ -1,0 +1,751 @@
+openapi: 3.2.0
+info:
+  title: go-starter API
+  version: "1.0.0"
+  license:
+    name: MIT
+    identifier: MIT
+  description: |
+    这份 spec 是唯一真相源（spec-first）。每个 operation 用 tag 归属到一个
+    业务模块，各模块用 oapi-codegen 的 include-tags 只生成自己的那部分
+    （internal/modules/<m>/httpapi/oapi/）。改接口的固定流程是先改这份
+    文件，再跑 `go generate ./...`，编译器会报出所有需要跟进的 handler。
+    新增 operation 必须带 tag，否则没有任何模块会注册它（路由与 spec 的
+    一致性由 internal/app 的测试检查）。
+    请求体字段的 `required`/`minLength`/`format` 等约束靠
+    `x-oapi-codegen-extra-tags` 注入的 `validate` struct tag 在 handler
+    里用 go-playground/validator 校验，不是靠某个独立的请求校验中间件
+    （`oapi-codegen/echo-middleware` 目前只支持 Echo v4，这个项目全程用
+    Echo v5）。
+    /healthz、/readyz 是运维探针，不写进这份 spec。
+
+servers:
+  - url: /v1
+
+tags:
+  - name: auth
+    summary: 登录与会话
+    description: 前台用户的登录（微信各入口）、会话和账号（internal/modules/auth）
+
+security:
+  - bearerAuth: []
+
+paths:
+  /auth/oauth/{provider}/authorize:
+    get:
+      operationId: authorizeOAuth
+      tags: [auth]
+      summary: 发起浏览器授权（整页跳转到第三方授权页）
+      description: |
+        登录（未登录）、绑定和重新验证共用这一条流程，intent 由调用方决定：登录
+        直接访问本接口；绑定和重新验证先调对应的 /v1/me 接口拿到 authorize_url。
+        return_to 只接受以单个 / 开头的站内相对路径。回调最终跳回前端
+        /auth/complete，浏览器登录多一步兑换（POST /v1/auth/oauth/exchange）。
+      security: []
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [wechat-web, wechat-mp]
+        - name: return_to
+          in: query
+          required: false
+          description: 登录成功后的站内跳转路径，以单个 / 开头。
+          schema:
+            type: string
+      responses:
+        "302":
+          description: 跳转到第三方授权页
+          headers:
+            Location:
+              schema:
+                type: string
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+
+  /auth/oauth/{provider}/callback:
+    get:
+      operationId: oauthCallback
+      tags: [auth]
+      summary: 第三方授权回调
+      description: |
+        校验一次性 state 和浏览器绑定 cookie。登录 intent 把结果写成一次性
+        兑换（60 秒）并跳回前端 /auth/complete?intent=login&code=...；绑定和
+        重新验证 intent 在这里直接完成并跳回 /auth/complete?intent=...&result=...。
+        服务号网页快照页（is_snapshotuser=1）一律拒绝。
+      security: []
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: code
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: state
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: is_snapshotuser
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "302":
+          description: 跳回前端的 /auth/complete
+          headers:
+            Location:
+              schema:
+                type: string
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+
+  /auth/oauth/exchange:
+    post:
+      operationId: exchangeOAuth
+      tags: [auth]
+      summary: 兑换浏览器登录结果
+      description: |
+        浏览器登录的最后一步：前端用回调带回的一次性兑换码发同站请求，
+        服务端校验浏览器绑定 cookie 后完成登录并交付会话。Origin 在
+        cookie 交付名单内时 refresh token 只进 httpOnly cookie，响应体不含。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExchangeRequest"
+      responses:
+        "200":
+          description: 登录成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+
+  /auth/native/{provider}/login:
+    post:
+      operationId: nativeLogin
+      tags: [auth]
+      summary: 原生 SDK 登录（小程序 wx.login / App SDK 授权）
+      security: []
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [wechat-miniprogram, wechat-app]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NativeLoginRequest"
+      responses:
+        "200":
+          description: 登录成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+
+  /auth/session/refresh:
+    post:
+      operationId: refreshSession
+      tags: [auth]
+      summary: 轮换 refresh token 并签发新 access token
+      description: |
+        出示的 refresh token 既不是当前值、也不是宽限期内的上一代时，判定为
+        泄露并吊销整个会话。客户端必须串行刷新（web 用 Web Locks，App/小程序
+        进程内 single-flight）。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RefreshRequest"
+      responses:
+        "200":
+          description: 轮换成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+
+  /auth/session/logout:
+    post:
+      operationId: logout
+      tags: [auth]
+      summary: 登出（吊销会话）
+      description: access token 过期了也能登出：只认 refresh token。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LogoutRequest"
+      responses:
+        "204":
+          description: 已登出
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+
+  /me:
+    patch:
+      operationId: updateMe
+      tags: [auth]
+      summary: 修改昵称和头像
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateMeRequest"
+      responses:
+        "200":
+          description: 更新后的账号
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+    delete:
+      operationId: deleteMe
+      tags: [auth]
+      summary: 注销账号
+      description: |
+        要求最近重新验证过身份（†）。注销是账号级状态变更，吊销全部会话、删除
+        全部登录方式和微信 openid，并发布 user_deleted 事件让各模块清理数据。
+      responses:
+        "204":
+          description: 已注销
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /me/identities:
+    get:
+      operationId: listMyIdentities
+      tags: [auth]
+      summary: 列出当前账号的登录方式
+      description: 按绑定时间倒序。
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: 登录方式列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IdentityList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /me/identities/oauth/{provider}:
+    post:
+      operationId: bindIdentityOAuth
+      tags: [auth]
+      summary: 发起浏览器绑定第三方登录方式
+      description: 返回 authorize_url，整页跳转到第三方授权页，回调里完成绑定。
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [wechat-web, wechat-mp]
+      responses:
+        "200":
+          description: 授权链接
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OAuthStartResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /me/identities/native/{provider}:
+    post:
+      operationId: bindIdentityNative
+      tags: [auth]
+      summary: 原生 SDK 绑定第三方登录方式
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [wechat-miniprogram, wechat-app]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NativeBindRequest"
+      responses:
+        "200":
+          description: 绑定后的登录方式
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Identity"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /me/identities/{id}:
+    delete:
+      operationId: unbindIdentity
+      tags: [auth]
+      summary: 解绑登录方式
+      description: 拒绝解绑最后一种登录方式；解绑微信时同时删除该账号的全部微信 openid。
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      responses:
+        "204":
+          description: 已解绑
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /me/reauthenticate/oauth/{provider}:
+    post:
+      operationId: reauthenticateOAuth
+      tags: [auth]
+      summary: 发起浏览器重新验证
+      description: 返回 authorize_url；回调完成验证后更新会话的 auth_time。仅当账号没有
+        密码、邮箱、手机号等更强凭据时可用（P1a 的账号只有微信登录方式）。
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [wechat-web, wechat-mp]
+      responses:
+        "200":
+          description: 授权链接
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OAuthStartResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /me/reauthenticate/native/{provider}:
+    post:
+      operationId: reauthenticateNative
+      tags: [auth]
+      summary: 原生 SDK 重新验证
+      description: 校验凭证必须返回当前账号自己的 (provider, subject)，成功后更新会话的 auth_time。
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [wechat-miniprogram, wechat-app]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NativeBindRequest"
+      responses:
+        "200":
+          description: 已更新 auth_time
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /me/sessions:
+    get:
+      operationId: listMySessions
+      tags: [auth]
+      summary: 列出当前账号的登录会话（设备列表）
+      description: 只列未吊销的会话，按登录时间倒序。
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: 会话列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /me/sessions/{id}:
+    delete:
+      operationId: revokeMySession
+      tags: [auth]
+      summary: 踢下线（吊销指定会话）
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      responses:
+        "204":
+          description: 已吊销
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    ID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: 上一页响应里的 next_cursor；不传表示取第一页。
+      schema:
+        type: string
+    Limit:
+      name: limit
+      in: query
+      required: false
+      description: 默认 20，超过 100 会被服务端拉回默认值。
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+
+  responses:
+    BadRequest:
+      description: 请求参数不合法
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: "未提供有效的 Authorization: Bearer token"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Forbidden:
+      description: 权限不足（含 † 操作要求的最近重新验证未满足）
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: 资源不存在
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    TooManyRequests:
+      description: 触发限流
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  schemas:
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          examples: ["product_not_found"]
+          type: string
+          description: |
+            机器可读的错误码，比如 product_not_found、insufficient_stock、invalid_cursor。
+            业务错误的取值由各模块 domain/errors.go 里的 errs.New 定义，这里不逐条
+            枚举，避免 spec 和代码出现第二个需要同步的地方。另有两个通用取值：
+            invalid_request（请求字段校验失败，message 列出 JSON 字段和规则）、
+            http_error（请求格式错误、路径参数格式不对、请求体过大等框架层错误）。
+        message:
+          examples: ["product not found"]
+          type: string
+        retry_after:
+          type: integer
+          minimum: 1
+          examples: [120]
+          description: 多少秒之后可以再试，只在 429 里出现，和 Retry-After 响应头相同。
+
+    User:
+      type: object
+      required: [id, display_name, avatar_url, created_at, updated_at]
+      properties:
+        id:
+          examples: ["01936f3e-8a2b-7c4d-9e5f-0a1b2c3d4e5f"]
+          type: string
+          format: uuid
+          x-go-type: string
+        display_name:
+          examples: ["张三"]
+          type: string
+        avatar_url:
+          examples: ["https://example.com/avatar.png"]
+          type: string
+        created_at:
+          examples: ["2026-11-06T08:00:00Z"]
+          type: string
+          format: date-time
+        updated_at:
+          examples: ["2026-11-06T08:00:00Z"]
+          type: string
+          format: date-time
+
+    UpdateMeRequest:
+      type: object
+      properties:
+        display_name:
+          examples: ["张三"]
+          type: string
+          minLength: 1
+          maxLength: 64
+          x-oapi-codegen-extra-tags:
+            validate: "omitempty,min=1,max=64"
+        avatar_url:
+          examples: ["https://example.com/avatar.png"]
+          type: string
+          maxLength: 1024
+          x-oapi-codegen-extra-tags:
+            validate: "omitempty,max=1024,url"
+
+    ExchangeRequest:
+      type: object
+      required: [code]
+      properties:
+        code:
+          examples: ["a1b2c3d45f0e9c7b2a4d6e8f1c3b5a7d9e0f2c4b6a8d0e1f3c5b7a9d"]
+          type: string
+          minLength: 16
+          x-oapi-codegen-extra-tags:
+            validate: "required,min=16"
+
+    NativeLoginRequest:
+      type: object
+      required: [code, client]
+      properties:
+        code:
+          examples: ["071xyz"]
+          type: string
+          minLength: 1
+          x-oapi-codegen-extra-tags:
+            validate: "required,min=1"
+        client:
+          examples: ["miniprogram"]
+          type: string
+          enum: [web, app, miniprogram]
+          x-oapi-codegen-extra-tags:
+            validate: "required,oneof=web app miniprogram"
+        device_name:
+          examples: ["iPhone 16"]
+          type: string
+          maxLength: 128
+          x-oapi-codegen-extra-tags:
+            validate: "omitempty,max=128"
+
+    NativeBindRequest:
+      type: object
+      required: [code]
+      properties:
+        code:
+          examples: ["071xyz"]
+          type: string
+          minLength: 1
+          x-oapi-codegen-extra-tags:
+            validate: "required,min=1"
+
+    RefreshRequest:
+      type: object
+      properties:
+        refresh_token:
+          examples: ["f4m1ly.r4nd0m"]
+          type: string
+          description: Origin 不在 cookie 交付名单内的客户端（App、小程序）从请求体出示 refresh token。
+
+    LogoutRequest:
+      type: object
+      properties:
+        refresh_token:
+          examples: ["f4m1ly.r4nd0m"]
+          type: string
+          description: Origin 不在 cookie 交付名单内的客户端（App、小程序）从请求体出示 refresh token。
+
+    TokenResponse:
+      type: object
+      required: [access_token, expires_in, refresh_delivery]
+      properties:
+        access_token:
+          examples: ["eyJhbGciOi..."]
+          type: string
+          description: JWT，15 分钟有效，每次请求按 sid 查会话校验。
+        expires_in:
+          examples: [900]
+          type: integer
+          format: int64
+          description: access token 的有效秒数。
+        refresh_token:
+          examples: ["f4m1ly.r4nd0m"]
+          type: string
+          description: 只在 Origin 不在 cookie 交付名单内时出现；名单内的客户端 refresh token 只进 httpOnly cookie。
+        refresh_delivery:
+          examples: ["cookie"]
+          type: string
+          enum: [cookie, body]
+          description: 本次会话的 refresh token 交付方式。
+        return_to:
+          examples: ["/orders"]
+          type: string
+          description: 浏览器登录时发起方传入的站内跳转路径。
+
+    OAuthStartResponse:
+      type: object
+      required: [authorize_url]
+      properties:
+        authorize_url:
+          examples: ["https://open.weixin.qq.com/connect/oauth2/authorize?..."]
+          type: string
+          format: uri
+
+    Identity:
+      type: object
+      required: [id, provider, created_at]
+      properties:
+        id:
+          examples: ["01936f3e-8a2b-7c4d-9e5f-0a1b2c3d4e5f"]
+          type: string
+          format: uuid
+          x-go-type: string
+        provider:
+          examples: ["wechat"]
+          type: string
+          enum: [email, phone, github, google, apple, wechat]
+        last_login_at:
+          examples: ["2026-11-06T08:00:00Z"]
+          type: string
+          format: date-time
+        created_at:
+          examples: ["2026-11-06T08:00:00Z"]
+          type: string
+          format: date-time
+
+    IdentityList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Identity"
+        next_cursor:
+          examples: ["MTc2MjQxMjQwMDAwMDAwMDAwMHwwMTkzNmYzZS04YTJiLTdjNGQtOWU1Zi0wYTFiMmMzZDRlNWY"]
+          type: string
+          description: 为空表示没有下一页。
+
+    Session:
+      type: object
+      required: [id, client, device_name, created_at, last_used_at, expires_at, current]
+      properties:
+        id:
+          examples: ["01936f3e-8a2b-7c4d-9e5f-0a1b2c3d4e5f"]
+          type: string
+          format: uuid
+          x-go-type: string
+        client:
+          examples: ["web"]
+          type: string
+          enum: [web, app, miniprogram]
+        device_name:
+          examples: ["iPhone 16"]
+          type: string
+        user_agent:
+          examples: ["Mozilla/5.0 ..."]
+          type: string
+        ip:
+          examples: ["203.0.113.10"]
+          type: string
+        created_at:
+          examples: ["2026-11-06T08:00:00Z"]
+          type: string
+          format: date-time
+        last_used_at:
+          examples: ["2026-11-06T08:00:00Z"]
+          type: string
+          format: date-time
+        expires_at:
+          examples: ["2026-12-06T08:00:00Z"]
+          type: string
+          format: date-time
+        current:
+          examples: [true]
+          type: boolean
+          description: 是否为发起请求的当前会话。
+
+    SessionList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Session"
+        next_cursor:
+          examples: ["MTc2MjQxMjQwMDAwMDAwMDAwMHwwMTkzNmYzZS04YTJiLTdjNGQtOWU1Zi0wYTFiMmMzZDRlNWY"]
+          type: string
+          description: 为空表示没有下一页。

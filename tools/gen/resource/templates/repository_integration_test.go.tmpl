@@ -1,0 +1,19 @@
+//go:build integration
+
+package postgres_test
+
+import (
+	"testing"
+
+	"{{.GoMod}}/internal/modules/{{.N.Module}}"
+	"{{.GoMod}}/internal/modules/{{.N.Module}}/domain"
+	"{{.GoMod}}/internal/modules/{{.N.Module}}/domain/domaintest"
+	"{{.GoMod}}/internal/modules/{{.N.Module}}/postgres"
+	"{{.GoMod}}/internal/platform/postgres/pgtest"
+)
+
+func TestRepository_Contract(t *testing.T) {
+	domaintest.RunRepositoryContract(t, func(t *testing.T) domain.Repository {
+		return postgres.NewRepository(pgtest.Handle(t, {{.N.Module}}.Migrations))
+	})
+}

@@ -1,0 +1,29 @@
+import { Link } from "@tanstack/react-router";
+
+import { {{.EntityMeta}}{{range .EnumMetas .ListColumns}}, {{.}}{{end}} } from "@/api/meta.gen";
+import type { DataTableColumn } from "@/components/data-table";
+{{- with .ListCellComponents}}
+import { {{.}} } from "@/components/data-table/cells";
+{{- end}}
+
+import type { {{.N.Type}} } from "./queries";
+
+const { fields } = {{.EntityMeta}};
+
+// 列表的列。{{.Display.Title}}链接到详情页，修改和其它操作都在详情页上。
+export const columns: DataTableColumn<{{.N.Type}}>[] = [
+{{- range .ListColumns}}
+{{- if eq .Name $.D.Display}}
+  {
+    header: fields.{{.Name}}.title,
+    cell: ({ row }) => (
+      <Link to="{{$.Route}}/$id" params={{"{{"}} id: row.original.id }} className="font-medium underline-offset-4 hover:underline">
+        {row.original.{{.Name}}}
+      </Link>
+    ),
+  },
+{{- else}}
+  { header: fields.{{.Name}}.title, cell: ({ row }) => {{$.Cell . "row.original"}} },
+{{- end}}
+{{- end}}
+];

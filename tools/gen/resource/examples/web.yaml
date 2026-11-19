@@ -1,0 +1,13 @@
+# 资源描述文件：只开放到前台的资源。规则见 docs/agents/generator.md，校验：go run ./tools/gen check <文件>
+module: guestbook
+resource: entry
+title: 留言
+fields:
+  author:  { type: string, title: 昵称, required: true, max: 30 }
+  content: { type: text, title: 内容, required: true, max: 1000 }
+indexes:
+  - columns: [-created_at, -id]
+    for: 前台列表的 cursor 分页：WHERE (created_at, id) < ($1, $2) ORDER BY created_at DESC, id DESC
+web:
+  operations: [list, get, create]
+  auth: [create]          # 需要登录的操作；其余公开

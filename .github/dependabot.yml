@@ -1,0 +1,51 @@
+# 各生态合并成每周一个 PR。cooldown 不提议 3 天内刚发布的版本，是对
+# "刚被投毒的 release"的廉价对冲。
+#
+# 不交给 dependabot 的版本（同一个版本写在多处，单独改一处会让
+# scripts/check-versions.sh 失败，需要人一起改）：
+#   - Go 版本：以 go.mod 为准，同步改 CI 的 go-version 和 Dockerfile 的 golang 镜像；
+#   - compose 里的 postgres、migrate 镜像：同步改 pgtest 和 Makefile；
+#   - Dockerfile 的 node 镜像主版本：以 web/admin/package.json 的 engines 为准，同步改 CI 的
+#     node-version。
+#     postgres 跨大版本还要处理数据目录升级，不能自动合并。
+version: 2
+
+multi-ecosystem-groups:
+  weekly:
+    schedule:
+      interval: weekly
+
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    multi-ecosystem-group: weekly
+    patterns: ["*"]
+    cooldown:
+      default-days: 3
+
+  - package-ecosystem: github-actions
+    directory: /
+    multi-ecosystem-group: weekly
+    patterns: ["*"]
+    cooldown:
+      default-days: 3
+
+  # 后台前端。冷却期和其它生态一样是 3 天，比 pnpm-workspace.yaml 的 minimumReleaseAge（1 天）更严。
+  - package-ecosystem: npm
+    directory: /web/admin
+    multi-ecosystem-group: weekly
+    patterns: ["*"]
+    cooldown:
+      default-days: 3
+
+  - package-ecosystem: docker
+    directories: ["/deploy"]
+    multi-ecosystem-group: weekly
+    patterns: ["*"]
+    ignore:
+      - dependency-name: golang
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: node
+        update-types: ["version-update:semver-major"]
+    cooldown:
+      default-days: 3

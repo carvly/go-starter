@@ -1,0 +1,12 @@
+/bin/
+.env
+*.local.yaml
+
+# 生成器的描述文件和快照（docs/agents/generator.md），不入库
+/.gen/
+
+# 历史文档只在本地保留，不提交、不被引用
+docs/archive/
+
+# 规划文档只在本地保留，不提交、不被引用
+docs/proposals/

@@ -1,0 +1,32 @@
+# 资源描述文件：只开放到后台的资源。规则见 docs/agents/generator.md，校验：go run ./tools/gen check <文件>
+module: catalog          # 新模块名：小写字母和数字，同时是 Go 包名和目录名
+resource: category       # 资源名，单数 snake_case；表名、路径、权限码由它推出（gen plan 列出）
+title: 商品分类           # 中文名：页面标题、菜单、权限页的分组名
+description: 商品的分类，前台按分类浏览
+display: name            # 代表一条记录给人看的字段：确认框、提示里用它
+fields:
+  name:       { type: string, title: 名称, required: true, max: 50, unique: true }
+  code:       { type: string, title: 编码, required: true, max: 32, unique: true, immutable: true, help: 创建后不能修改 }
+  sort_order: { type: int, title: 排序, default: 0, min: 0, max: 100000, help: 小的在前 }
+  status:     { type: enum, title: 状态, values: { enabled: 启用, disabled: 停用 }, default: enabled, readonly: true }
+  remark:     { type: text, title: 备注, max: 500 }
+indexes:
+  - columns: [sort_order, id]
+    for: 后台列表的默认排序：ORDER BY sort_order, id LIMIT/OFFSET
+  # status 只有两个取值，按它筛选不建索引；分类的数据量下顺序扫描足够
+admin:
+  operations: [create, update]
+  list:
+    columns: [name, code, status, sort_order, created_at]
+    search: [name, code]
+    filter: [status]
+    sort: [sort_order, created_at]
+    default_sort: sort_order
+  nav: { icon: Tags, order: 3 }   # 侧边栏菜单项：lucide-react 的图标名；分组不写时是 业务，顺序不写时是 100
+  actions:
+    disable:
+      title: 停用
+      set: { status: disabled }
+      when: { status: enabled }
+      confirm: 停用后前台不再显示这个分类
+    enable: { title: 启用, set: { status: enabled }, when: { status: disabled } }

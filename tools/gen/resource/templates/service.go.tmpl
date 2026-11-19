@@ -1,0 +1,211 @@
+package domain
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"unicode/utf8"
+	"uuid"
+{{- if .Admin}}
+
+	"{{.GoMod}}/internal/kit/page"
+{{- end}}
+)
+
+type Service struct {
+	repo Repository
+}
+
+func NewService(repo Repository) *Service {
+	return &Service{repo: repo}
+}
+{{if .Admin}}
+// SortFields 是列表允许排序的字段，DefaultSort 是默认排序。
+var (
+	SortFields  = []string{ {{- range $i, $s := .SortFields}}{{if $i}}, {{end}}{{q $s}}{{end -}} }
+	DefaultSort = page.Sort{Field: {{q .DefaultSort}}, Desc: {{.DefaultDesc}}}
+)
+
+// List 是后台列表，直接读库。
+func (s *Service) List(ctx context.Context, f {{.N.Type}}Filter, sort page.Sort, p page.Request) (page.Result[*{{.N.Type}}], error) {
+{{- if .Search}}
+	f.Keyword = strings.TrimSpace(f.Keyword)
+{{- end}}
+	r, err := s.repo.List(ctx, f, sort, p)
+	if err != nil {
+		return page.Result[*{{.N.Type}}]{}, fmt.Errorf("list {{.N.Plural}}: %w", err)
+	}
+	return r, nil
+}
+{{else}}
+// List 分页列出。limit 不在 [1, MaxListLimit] 内时回落到 DefaultListLimit。
+func (s *Service) List(ctx context.Context, cursor string, limit int) ([]*{{.N.Type}}, string, error) {
+	if limit <= 0 || limit > MaxListLimit {
+		limit = DefaultListLimit
+	}
+	items, next, err := s.repo.List(ctx, cursor, limit)
+	if err != nil {
+		return nil, "", fmt.Errorf("list {{.N.Plural}}: %w", err)
+	}
+	return items, next, nil
+}
+{{end}}
+func (s *Service) Get(ctx context.Context, id string) (*{{.N.Type}}, error) {
+	v, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("get {{.N.Resource}}: %w", err)
+	}
+	return v, nil
+}
+{{if .HasCreate}}
+// Create 新建一条{{.D.Title}}。
+func (s *Service) Create(ctx context.Context, in {{.N.Type}}Create) (*{{.N.Type}}, error) {
+	v := &{{.N.Type}}{
+		ID: uuid.NewV7().String(),
+{{- range .Create}}
+		{{.Go}}: {{if eq .GoType "string"}}strings.TrimSpace(in.{{.Go}}){{else}}in.{{.Go}}{{end}},
+{{- end}}
+{{- range .Fields}}{{if and .Readonly .DefaultGo}}
+		{{.Go}}: {{.DefaultGo}},
+{{- end}}{{end}}
+	}
+{{- range .Create}}{{if .Checks}}
+	if err := check{{.Go}}(v.{{.Go}}); err != nil {
+		return nil, err
+	}
+{{- end}}{{end}}
+{{- range .Rules}}{{if .OnCreate}}
+	if err := s.checkRule{{.N}}(ctx, v); err != nil {
+		return nil, err
+	}
+{{- end}}{{end}}
+	if err := s.repo.Create(ctx, v); err != nil {
+		return nil, fmt.Errorf("create {{.N.Resource}}: %w", err)
+	}
+	return v, nil
+}
+{{end}}
+{{- if .HasUpdate}}
+// Update 改可编辑的字段。in.Version 是打开编辑表单时读到的版本，两人同时编辑时后提交的
+// 得到 ErrConflict，而不是悄悄覆盖先提交的。
+func (s *Service) Update(ctx context.Context, id string, in {{.N.Type}}Update) (*{{.N.Type}}, error) {
+{{- range .Update}}{{if eq .GoType "string"}}
+	in.{{.Go}} = strings.TrimSpace(in.{{.Go}})
+{{- end}}{{end}}
+{{- range .Update}}{{if .Checks}}
+	if err := check{{.Go}}(in.{{.Go}}); err != nil {
+		return nil, err
+	}
+{{- end}}{{end}}
+{{- if .HasUpdateRules}}
+	cur, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("update {{.N.Resource}}: %w", err)
+	}
+	next := *cur
+{{- range .Update}}
+	next.{{.Go}} = in.{{.Go}}
+{{- end}}
+{{- range .Rules}}{{if .OnUpdate}}
+	if err := s.checkRule{{.N}}(ctx, &next); err != nil {
+		return nil, err
+	}
+{{- end}}{{end}}
+{{- end}}
+	v, err := s.repo.Update(ctx, id, in)
+	if err != nil {
+		return nil, fmt.Errorf("update {{.N.Resource}}: %w", err)
+	}
+	return v, nil
+}
+{{end}}
+{{- if .HasDelete}}
+// Delete 删除一条{{.D.Title}}。
+func (s *Service) Delete(ctx context.Context, id string) error {
+{{- range .Rules}}{{if .OnDelete}}
+	if err := s.checkRule{{.N}}Delete(ctx, id); err != nil {
+		return err
+	}
+{{- end}}{{end}}
+	if err := s.repo.Delete(ctx, id); err != nil {
+		return fmt.Errorf("delete {{.N.Resource}}: %w", err)
+	}
+	return nil
+}
+{{end}}
+{{- range .Actions}}
+{{- if .Declarative}}
+// {{.Go}} 是动作"{{.Title}}"。
+func (s *Service) {{.Go}}(ctx context.Context, id string{{range .Sets}}{{if .Param}}, {{camel .Param.Name}} {{.Param.GoType}}{{end}}{{end}}) (*{{$.N.Type}}, error) {
+{{- range .Sets}}{{if .Param}}
+{{- if eq .Param.GoType "string"}}
+	{{camel .Param.Name}} = strings.TrimSpace({{camel .Param.Name}})
+{{- end}}
+{{- if .Field.Checks}}
+	if err := check{{.Field.Go}}({{camel .Param.Name}}); err != nil {
+		return nil, err
+	}
+{{- end}}
+{{- end}}{{end}}
+	v, err := s.repo.{{.Go}}(ctx, id{{range .Sets}}{{if .Param}}, {{camel .Param.Name}}{{end}}{{end}})
+	if err != nil {
+		return nil, fmt.Errorf("{{.Name}} {{$.N.Resource}}: %w", err)
+	}
+	return v, nil
+}
+{{else}}
+// {{.Go}} 是动作"{{.Title}}"，由 AI 按下面的说明补足：
+//
+{{comment .Custom}}
+{{- if .Errors}}
+//
+// 会返回的错误：{{range $i, $e := .Errors}}{{if $i}}、{{end}}{{$e.Var}}{{end}}。
+{{- end}}
+//
+// 实现要点：在 Repository 上加一个方法（ports.go、postgres、domaintest 的 fake 和契约用例一起加），
+// 条件和更新写在同一条 UPDATE 里（并发下不丢更新）；不读出整条记录再 Update，也不改 version
+// （编辑才用 version）；没更新到行时再查一次，区分不存在和条件不满足。
+{{- if .Whens}}
+//
+// 前置条件（按钮按它显隐）：{{range $i, $w := .Whens}}{{if $i}}，{{end}}{{$w.Field.Name}} 是 {{range $j, $v := $w.Values}}{{if $j}} 或 {{end}}{{$v}}{{end}}{{end}}；
+// 写进实现里的同一条 SQL，不满足时返回 ErrInvalidState。
+{{- end}}
+func (s *Service) {{.Go}}(ctx context.Context, id string{{range .Input}}, {{camel .Name}} {{.GoType}}{{end}}) (*{{$.N.Type}}, error) {
+	return nil, ErrNotImplemented
+}
+{{end}}
+{{- end}}
+{{- range .Rules}}
+{{- if .OnWrite}}
+// checkRule{{.N}} 是第 {{.N}} 条业务规则，在写库之前调用，v 是要写入的记录。由 AI 按下面的说明补足：
+//
+{{comment .Custom}}
+{{- if .Errors}}
+//
+// 会返回的错误：{{range $i, $e := .Errors}}{{if $i}}、{{end}}{{$e.Var}}{{end}}。
+{{- end}}
+func (s *Service) checkRule{{.N}}(ctx context.Context, v *{{$.N.Type}}) error {
+	return ErrNotImplemented
+}
+{{end}}
+{{- if .OnDelete}}
+// checkRule{{.N}}Delete 是第 {{.N}} 条业务规则，在删除之前调用。由 AI 按下面的说明补足：
+//
+{{comment .Custom}}
+{{- if .Errors}}
+//
+// 会返回的错误：{{range $i, $e := .Errors}}{{if $i}}、{{end}}{{$e.Var}}{{end}}。
+{{- end}}
+func (s *Service) checkRule{{.N}}Delete(ctx context.Context, id string) error {
+	return ErrNotImplemented
+}
+{{end}}
+{{- end}}
+{{- range .Checked}}
+func check{{.Go}}(v {{.GoType}}) error {
+	if {{.InvalidCond "v"}} {
+		return {{.ErrInvalid}}
+	}
+	return nil
+}
+{{end}}

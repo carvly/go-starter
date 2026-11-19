@@ -1,0 +1,15 @@
+import type { QueryClient } from "@tanstack/react-query";
+import { Outlet, createRootRouteWithContext } from "@tanstack/react-router";
+
+import { Toaster } from "@/components/ui/toast";
+import { TooltipProvider } from "@/components/ui/tooltip";
+
+export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()({
+  component: () => (
+    <TooltipProvider>
+      <Toaster>
+        <Outlet />
+      </Toaster>
+    </TooltipProvider>
+  ),
+});

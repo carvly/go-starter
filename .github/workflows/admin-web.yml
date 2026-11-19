@@ -1,0 +1,159 @@
+name: Admin web
+
+# 后台前端（web/admin）的检查和端到端测试，只在可能影响后台页面的路径变化时运行。
+on:
+  push:
+    branches: [main]
+    paths:
+      - "web/admin/**"
+      - "api/admin.yaml"
+      - "internal/modules/*/adminapi/**"
+      - "internal/modules/*/domain/**"
+      - "internal/modules/*/module.yaml"
+      - "internal/platform/httpserver/**"
+      - "internal/app/admin_ui.go"
+      - "deploy/**"
+      - ".github/workflows/admin-web.yml"
+  pull_request:
+    paths:
+      - "web/admin/**"
+      - "api/admin.yaml"
+      - "internal/modules/*/adminapi/**"
+      - "internal/modules/*/domain/**"
+      - "internal/modules/*/module.yaml"
+      - "internal/platform/httpserver/**"
+      - "internal/app/admin_ui.go"
+      - "deploy/**"
+      - ".github/workflows/admin-web.yml"
+
+# GITHUB_TOKEN 只给读权限：这些 job 都不需要写仓库。
+permissions:
+  contents: read
+
+# 同一个 PR 连续推送时取消旧的运行；main 上的每次推送都跑完。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    working-directory: web/admin
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # pnpm 版本取自 package.json 的 packageManager。
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: web/admin/package.json
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: web/admin/pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm format:check
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm check:unused
+
+      - name: shadcn 组件没有被手改
+        run: pnpm ui:check
+
+      - name: API 类型与 api/admin.yaml 一致
+        # 用 git status --porcelain 而不是 git diff：后者看不到未跟踪的新文件。
+        run: |
+          pnpm gen:api
+          if [ -n "$(git status --porcelain -- src/api/schema.d.ts)" ]; then
+            echo "::error::src/api/schema.d.ts 与 api/admin.yaml 不一致，在 web/admin 里跑 'pnpm gen:api' 后提交"
+            exit 1
+          fi
+
+      - name: 构建
+        run: pnpm build
+
+      - name: 路由树与 src/routes 一致
+        # 路由树由构建时的 TanStack Router 插件生成。
+        run: |
+          if [ -n "$(git status --porcelain -- src/routeTree.gen.ts)" ]; then
+            echo "::error::src/routeTree.gen.ts 与 src/routes 不一致，在 web/admin 里跑 'pnpm build' 后提交"
+            exit 1
+          fi
+
+  # 关键路径的端到端测试：compose 起完整栈（api 镜像里嵌入了前端），Playwright 访问后台端口。
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      JWT_SIGNING_KEY: ci-test-signing-key-not-for-production
+      JWT_KEY_ID: ci-test-kid
+      COMPOSE_FILE: ${{ github.workspace }}/deploy/docker-compose.yml
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - id: capabilities
+        name: 检查后台接入能力
+        run: |
+          staff=true
+          if [ -f ../starter-removed.yaml ] && grep -Eq '^removed_modules:.*staff' ../starter-removed.yaml; then staff=false; fi
+          echo "staff=$staff" >> "$GITHUB_OUTPUT"
+      - name: 启动完整栈
+        if: steps.capabilities.outputs.staff == 'true'
+        run: docker compose up -d --build
+
+      - name: 等待后台端口就绪
+        if: steps.capabilities.outputs.staff == 'true'
+        run: |
+          for _ in $(seq 1 30); do
+            if curl -sf http://localhost:8081/healthz > /dev/null; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::后台端口在 150s 内没有就绪"
+          docker compose logs api
+          exit 1
+
+      - name: 创建首个超级管理员
+        if: steps.capabilities.outputs.staff == 'true'
+        run: |
+          password=$(docker compose run --rm api staff create -username root | sed -n 's/^临时密码.*：//p')
+          test -n "$password"
+          echo "E2E_ROOT_PASSWORD=$password" >> "$GITHUB_ENV"
+
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: web/admin/package.json
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: web/admin/pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+      - if: steps.capabilities.outputs.staff == 'true'
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: 端到端测试
+        if: steps.capabilities.outputs.staff == 'true'
+        run: pnpm e2e
+
+      - uses: actions/upload-artifact@v7
+        if: failure() && steps.capabilities.outputs.staff == 'true'
+        with:
+          name: playwright-report
+          path: web/admin/playwright-report/
+
+      - name: 停止并清理
+        if: always() && steps.capabilities.outputs.staff == 'true'
+        run: docker compose down -v

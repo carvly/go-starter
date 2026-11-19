@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>go-starter module collaboration</title>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&family=Noto+Serif+SC:wght@400&family=Noto+Sans+SC:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Geist', 'Noto Sans SC', system-ui, sans-serif; background: #f5f5f5; color: #2d3142;
+         min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 3rem 1rem; }
+  .frame { max-width: 1100px; width: 100%; }
+  .diagram-container { width: 100%; overflow-x: auto; }
+  .eyebrow { font-family: 'Geist Mono', monospace; font-size: 0.66rem; font-weight: 500; letter-spacing: 0.18em;
+             text-transform: uppercase; color: #4f5d75; margin-bottom: 0.5rem; }
+  h1 { font-family: 'Instrument Serif', 'Noto Serif SC', serif; font-size: clamp(1.5rem, 2.4vw + 0.75rem, 2rem);
+       font-weight: 400; letter-spacing: -0.01em; line-height: 1.2; margin-bottom: 1.5rem; }
+  .note { margin-top: 1rem; font-size: 0.85rem; color: #4f5d75; line-height: 1.7; max-width: 760px; }
+  .note code { font-family: 'Geist Mono', monospace; font-size: 0.8rem; }
+  svg { width: 100%; min-width: 1000px; display: block; }
+  @media print { .diagram-container { overflow-x: visible; } svg { min-width: 0; } }
+</style>
+</head>
+<body>
+<div class="frame">
+  <p class="eyebrow">Dependency graph · go-starter</p>
+  <h1>模块协作：消费方定义接口，组合根注入提供方</h1>
+  <div class="diagram-container">
+  <svg viewBox="0 0 1000 512" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="architecture-modules-title architecture-modules-desc">
+  <title id="architecture-modules-title">go-starter 的模块协作</title>
+  <desc id="architecture-modules-desc">auth 和 staff 不引用其它模块；staff 的 AdminGuard 保护全部后台路由，auth 的 user_deleted 事件由 auth 自己的 worker 消费。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
+    <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#bf4520"/></marker>
+    <marker id="arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2e5aa8"/></marker>
+  </defs>
+  <rect width="100%" height="100%" fill="#f5f5f5"/>
+
+  <text x="40" y="276" fill="#4f5d75" font-size="8" font-family="'Geist Mono', 'Noto Sans SC', monospace" letter-spacing="0.18em">当前模块</text>
+  <line x1="40" y1="256" x2="960" y2="256" stroke="rgba(45,49,66,0.12)" stroke-width="1"/>
+
+  <!-- 节点 -->
+  <g font-family="'Geist', 'Noto Sans SC', 'PingFang SC', sans-serif">
+    <!-- auth -->
+    <rect x="40" y="296" width="440" height="72" rx="6" fill="#f5f5f5"/>
+    <rect x="40" y="296" width="440" height="72" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+    <rect x="48" y="302" width="100" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+    <text x="98" y="311" fill="rgba(45,49,66,0.8)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">HTTP · ADMIN · JOB</text>
+    <text x="260" y="326" fill="#2d3142" font-size="13" font-weight="600" text-anchor="middle">auth</text>
+    <text x="260" y="342" fill="#4f5d75" font-size="10" text-anchor="middle">前台用户：微信登录、会话、鉴权中间件、接口限流（Redis）；注销发布 user_deleted</text>
+    <text x="260" y="358" fill="#5a6580" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">users · user_sessions · user_identities · wechat_openids · oauth_states</text>
+
+    <!-- staff -->
+    <rect x="520" y="296" width="440" height="72" rx="6" fill="#f5f5f5"/>
+    <rect x="520" y="296" width="440" height="72" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+    <rect x="528" y="302" width="96" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+    <text x="576" y="311" fill="rgba(45,49,66,0.8)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">ADMIN · JOB · CLI</text>
+    <text x="740" y="326" fill="#2d3142" font-size="13" font-weight="600" text-anchor="middle">staff</text>
+    <text x="740" y="342" fill="#4f5d75" font-size="10" text-anchor="middle">后台员工、角色权限、操作日志；所有后台路由都由它的 AdminGuard 保护</text>
+    <text x="740" y="358" fill="#5a6580" font-size="9" font-family="'Geist Mono', 'Noto Sans SC', monospace" text-anchor="middle">staff_accounts · staff_sessions · staff_roles … 共 6 张</text>
+  </g>
+
+  <!-- 图例 -->
+  <line x1="40" y1="400" x2="960" y2="400" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+  <text x="40" y="428" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.14em">LEGEND</text>
+  <g font-family="'Geist', 'Noto Sans SC', 'PingFang SC', sans-serif" font-size="11" fill="#2d3142">
+    <line x1="120" y1="424" x2="156" y2="424" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+    <text x="164" y="428">消费方 → 提供方：接口由消费方定义，internal/app 注入（标"适配器"的经 adapters_*.go 翻译错误）</text>
+    <line x1="120" y1="456" x2="156" y2="456" stroke="#bf4520" stroke-width="1.6" stroke-dasharray="0.5,3.5" stroke-linecap="round" marker-end="url(#arrow-accent)"/>
+    <text x="164" y="460">事件流：发布方 → 消费方，经 river 异步投递；消费方 import 发布方的 events 包</text>
+    <rect x="124" y="481" width="28" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+    <text x="138" y="490" fill="rgba(45,49,66,0.8)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">JOB</text>
+    <text x="164" y="492">角标：HTTP 前台路由 · ADMIN 后台路由 · JOB 任务 · CLI 子命令</text>
+  </g>
+  </svg>
+  </div>
+  <p class="note">模块之间不互相 import：消费方定义窄接口，组合根注入提供方；唯一允许的跨模块 import 是对方的 <code>events</code> 包。auth 的 <code>user_deleted</code> 由 auth 自己消费；持有用户数据的业务模块提供 <code>UserDataCleaner</code>，在组合根登记，并提供每日清扫。</p>
+</div>
+</body>
+</html>

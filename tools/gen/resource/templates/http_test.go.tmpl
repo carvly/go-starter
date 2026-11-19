@@ -1,0 +1,218 @@
+package {{.N.APIPackage}}_test
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/labstack/echo/v5"
+
+	"{{.GoMod}}/internal/config"
+	"{{.GoMod}}/internal/modules/{{.N.Module}}/{{.N.APIPackage}}"
+	"{{.GoMod}}/internal/modules/{{.N.Module}}/domain"
+	"{{.GoMod}}/internal/modules/{{.N.Module}}/domain/domaintest"
+	"{{.GoMod}}/internal/platform/httpserver"
+)
+
+// newServer 用真实的{{if .Admin}}后台 {{end}}server（中间件链、校验器、错误处理）挂上本模块的操作。
+// 登录{{if .Admin}}和权限{{end}}检查不在这里测，用一个放行的中间件代替。
+func newServer(t *testing.T) (*echo.Echo, *domain.Service, *domaintest.Repository) {
+	t.Helper()
+	repo := domaintest.NewRepository()
+	svc := domain.NewService(repo)
+	pass := func(next echo.HandlerFunc) echo.HandlerFunc { return next }
+{{- if .Admin}}
+	e, err := httpserver.NewAdmin(httpserver.AdminDeps{
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		HTTP:   config.HTTPConfig{BodyLimitBytes: 1 << 20, RequestTimeout: 5 * time.Second, GlobalRateLimitPerSecond: 1000},
+		Origin: "https://admin.example.com",
+		Routes: []func(*echo.Group){func(g *echo.Group) { adminapi.Register(g, adminapi.NewHandler(svc)) }},
+		Auth:   []echo.MiddlewareFunc{pass},
+	})
+{{- else}}
+	e, err := httpserver.New(httpserver.Deps{
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		HTTP:   config.HTTPConfig{BodyLimitBytes: 1 << 20, RequestTimeout: 5 * time.Second, GlobalRateLimitPerSecond: 1000},
+		CORS:   config.CORSConfig{AllowOrigins: []string{"https://example.com"}},
+		Routes: []func(*echo.Group){func(g *echo.Group) {
+			httpapi.Register(g, httpapi.NewHandler(svc){{if .WebAuth}}, httpapi.Middlewares{Auth: pass}{{end}})
+		}},
+	})
+	_ = pass
+{{- end}}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return e, svc, repo
+}
+
+func do(t *testing.T, e *echo.Echo, method, path, body string) (int, map[string]any) {
+	t.Helper()
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	if body != "" {
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	}
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	var m map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &m)
+	return rec.Code, m
+}
+
+const prefix = "{{if .Admin}}/admin/v1{{else}}/v1{{end}}{{.N.Path}}"
+{{if .HasCreate}}
+// 用全部字段创建，再读出来逐个比较：handler 里请求体到 Service、实体到响应的映射漏了字段，这里失败。
+func Test{{pascal .N.OpCreate}}_AllFields(t *testing.T) {
+	e, svc, _ := newServer(t)
+{{- if .HasNotImplemented}}
+	if _, err := svc.Create(t.Context(), domaintest.Valid{{.N.Type}}Create()); errors.Is(err, domain.ErrNotImplemented) {
+		t.Skip("rules 还没补足，见 NotImplemented 测试")
+	}
+{{- end}}
+	req := map[string]any{
+{{- range .Create}}
+		{{q .Name}}: json.RawMessage(`{{.JSONSample}}`),
+{{- end}}
+	}
+	body, _ := json.Marshal(req)
+	code, created := do(t, e, http.MethodPost, prefix, string(body))
+	if code != http.StatusCreated {
+		t.Fatalf("创建 = %d %v", code, created)
+	}
+{{- if or .Admin .WebGet}}
+	code, got := do(t, e, http.MethodGet, fmt.Sprintf("%s/%v", prefix, created["id"]), "")
+	if code != http.StatusOK {
+		t.Fatalf("详情 = %d %v", code, got)
+	}
+{{- else}}
+	got := created
+{{- end}}
+	for k, v := range req {
+		var want any
+		_ = json.Unmarshal(v.(json.RawMessage), &want)
+		if fmt.Sprint(got[k]) != fmt.Sprint(want) {
+			t.Errorf("%s = %v, want %v", k, got[k], want)
+		}
+	}
+	_ = svc
+}
+{{end}}
+{{- if or .Admin .WebList}}
+func Test{{pascal .N.OpList}}(t *testing.T) {
+	e, _, repo := newServer(t)
+	for range 3 {
+		if err := repo.Create(t.Context(), domaintest.Valid{{.N.Type}}()); err != nil {
+			t.Fatal(err)
+		}
+	}
+{{- if .Admin}}
+	code, body := do(t, e, http.MethodGet, prefix+"?page=1&size=2", "")
+	if items, _ := body["items"].([]any); code != http.StatusOK || body["total"] != float64(3) || len(items) != 2 {
+		t.Errorf("列表 = %d %v", code, body)
+	}
+	if code, body := do(t, e, http.MethodGet, prefix+"?sort=nope", ""); code != http.StatusBadRequest {
+		t.Errorf("不允许的排序 = %d %v, want 400", code, body)
+	}
+{{- else}}
+	code, body := do(t, e, http.MethodGet, prefix+"?limit=2", "")
+	if items, _ := body["items"].([]any); code != http.StatusOK || len(items) != 2 || body["next_cursor"] == nil {
+		t.Errorf("列表 = %d %v", code, body)
+	}
+{{- end}}
+}
+{{end}}
+{{- if or .Admin .WebGet}}
+func Test{{pascal .N.OpGet}}_NotFound(t *testing.T) {
+	e, _, _ := newServer(t)
+	if code, body := do(t, e, http.MethodGet, prefix+"/0199f1a2-3b4c-7d5e-8f60-718293a4b5c6", ""); code != http.StatusNotFound || body["code"] != "{{.N.Resource}}_not_found" {
+		t.Errorf("不存在 = %d %v, want 404", code, body)
+	}
+}
+{{end}}
+{{- if .HasUpdate}}
+func Test{{pascal .N.OpUpdate}}_Version(t *testing.T) {
+	e, svc, repo := newServer(t)
+{{- if .HasUpdateRules}}
+	probe := domaintest.Valid{{.N.Type}}()
+	if err := repo.Create(t.Context(), probe); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Update(t.Context(), probe.ID, domaintest.UpdateFrom(probe)); errors.Is(err, domain.ErrNotImplemented) {
+		t.Skip("rules 还没补足，见 NotImplemented 测试")
+	}
+{{- end}}
+	_ = svc
+	v := domaintest.Valid{{.N.Type}}()
+	if err := repo.Create(t.Context(), v); err != nil {
+		t.Fatal(err)
+	}
+	req := map[string]any{
+{{- range .Update}}
+		{{q .Name}}: json.RawMessage(`{{.JSONSample}}`),
+{{- end}}
+		"version": 1,
+	}
+	body, _ := json.Marshal(req)
+	if code, got := do(t, e, http.MethodPut, prefix+"/"+v.ID, string(body)); code != http.StatusOK || got["version"] != float64(2) {
+		t.Fatalf("修改 = %d %v", code, got)
+	}
+	if code, got := do(t, e, http.MethodPut, prefix+"/"+v.ID, string(body)); code != http.StatusConflict || got["code"] != "{{.N.Resource}}_conflict" {
+		t.Errorf("用旧 version 修改 = %d %v, want 409", code, got)
+	}
+}
+{{end}}
+{{- if .HasDelete}}
+func Test{{pascal .N.OpDelete}}(t *testing.T) {
+	e, svc, repo := newServer(t)
+{{- if .DeleteConflict}}
+	probe := domaintest.Valid{{.N.Type}}()
+	if err := repo.Create(t.Context(), probe); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Delete(t.Context(), probe.ID); errors.Is(err, domain.ErrNotImplemented) {
+		t.Skip("rules 还没补足，见 NotImplemented 测试")
+	}
+{{- end}}
+	_ = svc
+	v := domaintest.Valid{{.N.Type}}()
+	if err := repo.Create(t.Context(), v); err != nil {
+		t.Fatal(err)
+	}
+	if code, body := do(t, e, http.MethodDelete, prefix+"/"+v.ID, ""); code != http.StatusNoContent {
+		t.Fatalf("删除 = %d %v", code, body)
+	}
+	if code, _ := do(t, e, http.MethodGet, prefix+"/"+v.ID, ""); code != http.StatusNotFound {
+		t.Errorf("删除后详情 = %d, want 404", code)
+	}
+}
+{{end}}
+{{- range .Actions}}{{if .Declarative}}
+func Test{{pascal .Op}}(t *testing.T) {
+	e, _, repo := newServer(t)
+	v := domaintest.Valid{{$.N.Type}}()
+{{- range .Whens}}
+	v.{{.Field.Go}} = {{$.SetValue .FirstSet}}
+{{- end}}
+	if err := repo.Create(t.Context(), v); err != nil {
+		t.Fatal(err)
+	}
+	path := prefix + "/" + v.ID + "/{{$.ActionSegment .}}"
+	if code, body := do(t, e, http.MethodPost, path, `{{$.ActionBody .}}`); code != http.StatusOK {
+		t.Fatalf("{{.Title}} = %d %v", code, body)
+	}
+{{- if .Whens}}
+{{- if .FirstOther}}
+	if code, body := do(t, e, http.MethodPost, path, `{{$.ActionBody .}}`); code != http.StatusOK && code != http.StatusConflict {
+		t.Errorf("再次{{.Title}} = %d %v", code, body)
+	}
+{{- end}}
+{{- end}}
+}
+{{end}}{{end}}

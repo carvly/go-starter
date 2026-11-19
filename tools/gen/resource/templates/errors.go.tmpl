@@ -1,0 +1,36 @@
+package domain
+
+import "{{.GoMod}}/internal/kit/errs"
+
+// message 原样显示在后台页面上（生成的错误码没有另写前端文案），所以用中文。
+var (
+	ErrNotFound = errs.New(errs.KindNotFound, "{{.N.Resource}}_not_found", {{q (printf "%s不存在" .D.Title)}})
+{{- if .HasUpdate}}
+	// ErrConflict 是编辑时带的 version 已经不是最新：打开表单之后别人改过。
+	ErrConflict = errs.New(errs.KindConflict, "{{.N.Resource}}_conflict", {{q (printf "%s已被他人修改，请刷新后重试" .D.Title)}})
+{{- end}}
+{{- if .HasInvalidState}}
+	// ErrInvalidState 是动作的前置条件不满足（如已经停用的再停用）。
+	ErrInvalidState = errs.New(errs.KindConflict, "{{.N.Resource}}_invalid_state", {{q (printf "%s当前的状态不能执行这个操作，请刷新后重试" .D.Title)}})
+{{- end}}
+{{- if not .Admin}}
+	// ErrInvalidCursor 是客户端输入错误（比如手改了 cursor），必须是 4xx。
+	ErrInvalidCursor = errs.New(errs.KindInvalid, "invalid_cursor", "invalid pagination cursor")
+{{- end}}
+{{- range .Unique}}
+	{{.ErrTaken}} = errs.New(errs.KindConflict, "{{$.N.Resource}}_{{.Name}}_taken", {{q (printf "%s已被占用" .Title)}})
+{{- end}}
+{{- range .Checked}}
+	{{.ErrInvalid}} = errs.New(errs.KindInvalid, "{{$.N.Resource}}_invalid_{{.Name}}", {{q .InvalidMessage}})
+{{- end}}
+{{- range .Declared}}
+{{- if .Field}}
+	// {{.Var}} 显示在 {{.Field}} 下（前端的 handlesErrors）。
+{{- end}}
+	{{.Var}} = errs.New({{.Kind}}, {{q .Code}}, {{q .Message}})
+{{- end}}
+{{- if .HasNotImplemented}}
+	// ErrNotImplemented 由 custom 动作和 rules 的桩返回；全部补足后删掉它。
+	ErrNotImplemented = errs.New(errs.KindInternal, "not_implemented", "not implemented")
+{{- end}}
+)

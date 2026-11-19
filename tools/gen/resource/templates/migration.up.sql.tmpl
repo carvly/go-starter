@@ -1,0 +1,36 @@
+CREATE TABLE {{.N.Table}} (
+    id UUID,
+{{- range .Fields}}
+    {{.Name}} {{.SQLType}},
+{{- end}}
+{{- if .HasUpdate}}
+    version BIGINT NOT NULL DEFAULT 1,
+{{- end}}
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+{{- range .Unique}}{{if not (and (eq .GoType "string") (not .NotEmpty))}}
+    CONSTRAINT {{$.Constraint .}} UNIQUE ({{.Name}}),
+{{- end}}{{end}}
+{{- range .Fields}}{{if .Check}}
+    CONSTRAINT ck_{{$.N.Table}}_{{.Name}} CHECK ({{.Check}}),
+{{- end}}{{end}}
+    CONSTRAINT pk_{{.N.Table}} PRIMARY KEY (id)
+);
+{{range .Unique}}{{if and (eq .GoType "string") (not .NotEmpty)}}
+-- {{.Name}} 可以不填（存空串）：只对填了的值要求唯一。
+CREATE UNIQUE INDEX {{$.Constraint .}} ON {{$.N.Table}} ({{.Name}}) WHERE {{.Name}} <> '';
+{{end}}{{end}}
+{{- range .Indexes}}
+-- 服务{{.For}}
+CREATE INDEX {{.Name}} ON {{$.N.Table}} ({{.Columns}}){{if .Where}} WHERE {{.Where}}{{end}};
+{{end}}
+COMMENT ON TABLE {{.N.Table}} IS '{{sqlq .D.Title}}{{if .D.Description}}：{{sqlq .D.Description}}{{end}}';
+COMMENT ON COLUMN {{.N.Table}}.id IS '{{sqlq .D.Title}} ID，应用层生成的 UUIDv7';
+{{- range .Fields}}
+COMMENT ON COLUMN {{$.N.Table}}.{{.Name}} IS '{{.Comment}}';
+{{- end}}
+{{- if .HasUpdate}}
+COMMENT ON COLUMN {{.N.Table}}.version IS '乐观锁版本号：编辑时校验并加 1；动作不改它';
+{{- end}}
+COMMENT ON COLUMN {{.N.Table}}.created_at IS '创建时间';
+COMMENT ON COLUMN {{.N.Table}}.updated_at IS '最后更新时间';

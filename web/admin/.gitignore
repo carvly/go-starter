@@ -1,0 +1,8 @@
+node_modules/
+*.local
+*.tsbuildinfo
+# 构建产物不提交；dist/.placeholder 保证没有构建前端时 go:embed 照样能编译
+/dist/*
+!/dist/.placeholder
+/test-results/
+/playwright-report/

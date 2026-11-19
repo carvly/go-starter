@@ -1,0 +1,35 @@
+package domain
+
+import (
+	"context"
+{{- if .Admin}}
+
+	"{{.GoMod}}/internal/kit/page"
+{{- end}}
+)
+
+// Repository 由本模块的 postgres 子包实现。
+type Repository interface {
+	Create(ctx context.Context, v *{{.N.Type}}) error
+	GetByID(ctx context.Context, id string) (*{{.N.Type}}, error)
+{{- if .Admin}}
+	// List 是后台列表：只放有值的筛选条件，按 s 排序后再按 id 排，总数封顶在 page.MaxTotal。
+	List(ctx context.Context, f {{.N.Type}}Filter, s page.Sort, p page.Request) (page.Result[*{{.N.Type}}], error)
+{{- else}}
+	// List 按创建时间倒序分页。cursor 为空表示第一页；nextCursor 为空表示没有下一页。
+	List(ctx context.Context, cursor string, limit int) (items []*{{.N.Type}}, nextCursor string, err error)
+{{- end}}
+{{- if .HasUpdate}}
+	// Update 在 version 仍是最新时改可编辑的字段并把 version 加 1，必须是单条条件 UPDATE；
+	// 不存在返回 ErrNotFound，version 不是最新返回 ErrConflict。
+	Update(ctx context.Context, id string, in {{.N.Type}}Update) (*{{.N.Type}}, error)
+{{- end}}
+{{- if .HasDelete}}
+	// Delete 物理删除；不存在返回 ErrNotFound。
+	Delete(ctx context.Context, id string) error
+{{- end}}
+{{- range .Actions}}{{if .Declarative}}
+	// {{.Go}} 是动作"{{.Title}}"：条件和更新写在同一条 SQL 里；不存在返回 ErrNotFound{{if .Whens}}，条件不满足返回 ErrInvalidState{{end}}。
+	{{.Go}}(ctx context.Context, id string{{range .Sets}}{{if .Param}}, {{camel .Param.Name}} {{.Param.GoType}}{{end}}{{end}}) (*{{$.N.Type}}, error)
+{{- end}}{{end}}
+}

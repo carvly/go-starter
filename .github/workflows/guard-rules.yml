@@ -1,0 +1,50 @@
+name: Guard rules
+
+# 单独成一个工作流：打标签、改 PR 描述时只需要重跑这一项，不必重跑整套 CI。
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled, edited]
+
+# GITHUB_TOKEN 只给读权限：这些 job 都不需要写仓库。
+permissions:
+  contents: read
+
+# 同一个 PR 连续推送时取消旧的运行；main 上的每次推送都跑完。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # 改动了检查规则本身的 PR 必须显式标记并说明理由。这是减速带，不是安全边界：
+  # 有写权限的人也能自己打标签，它的作用是让"改规则"在 review 里无法被忽略。
+  # dependabot 的 PR 只升级版本号（包括工作流里的 action 版本），不受此限制。
+  guard-rules:
+    if: github.event.pull_request.user.login != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: 受保护路径的改动需要 rule-change 标签和规则变更说明
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          # --no-renames：否则把受保护文件改名挪走后只会列出新路径，检查被绕过。
+          changed=$(git diff --name-only --no-renames "$BASE_SHA"...HEAD | grep -E '^(internal/archtest/|internal/app/registry_test\.go$|\.golangci\.yml$|lefthook\.yml$|Makefile$|scripts/check-[^/]*\.sh$|\.github/workflows/|\.github/dependabot\.yml$|\.redocly\.lint-ignore\.yaml$)' || true)
+          if [ -z "$changed" ]; then
+            exit 0
+          fi
+          echo "本 PR 改动了检查规则："
+          echo "$changed"
+          if [[ ",$LABELS," != *",rule-change,"* ]]; then
+            echo "::error::改动检查规则的 PR 必须带 rule-change 标签"
+            exit 1
+          fi
+          if ! grep -q '规则变更说明' <<<"$PR_BODY"; then
+            echo "::error::PR 描述里必须有\"规则变更说明\"一节，写明为什么要改规则而不是改代码"
+            exit 1
+          fi

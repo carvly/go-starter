@@ -1,0 +1,17 @@
+{
+  "$schema": "./node_modules/oxfmt/configuration_schema.json",
+  "printWidth": 140,
+  "ignorePatterns": [
+    "pnpm-lock.yaml",
+    "pnpm-workspace.yaml",
+    "src/routeTree.gen.ts",
+    "src/api/schema.d.ts",
+    "src/api/meta.gen.ts",
+    "src/components/ui/**",
+    "src/hooks/**",
+    "src/lib/utils.ts",
+    "src/index.css",
+    "dist/**",
+    "**/*.md"
+  ]
+}

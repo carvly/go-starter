@@ -1,0 +1,180 @@
+# 本地跑完整应用（api+worker+postgres 协作）唯一的路径——3.5 已经决定
+# 放弃 SQLite，不再有"本地用 SQLite、部署用 Postgres 两条路径长得不
+# 一样"这个问题。
+#
+# 用法：
+#   docker compose -f deploy/docker-compose.yml up -d
+#   podman compose -f deploy/docker-compose.yml up -d   # 见文件末尾的 Podman 说明
+#
+# 故意不写顶层 `version:` 字段——那是旧版 docker-compose v1 的产物，
+# 现在的 Compose Spec（docker compose v2 / podman compose）会直接忽略
+# 它甚至报 warning，省掉之后两边都不受影响。
+#
+# 下面 `environment` 里的 JWT_SIGNING_KEY 等值给了本地开发默认值，只是
+# 为了 `docker compose up` 后不需要先手写一个 .env 也能直接跑起来
+# demo——生产环境必须通过真正的 secrets 机制覆盖，不能沿用这里的默认值。
+# 想覆盖时，在这个文件同级目录放一个 `.env`
+# 文件（参考 ../configs/.env.example），docker compose 会自动读取
+# 同名变量做替换。
+
+# 前台登录的配置。微信各入口默认不启用，要用哪个入口就在 .env 里配上它的 appid 和
+# secret；AUTH_PUBLIC_BASE_URL 要和微信侧配置的回调域名一致。
+x-auth-env: &auth-env
+  AUTH_PUBLIC_BASE_URL: ${AUTH_PUBLIC_BASE_URL:-http://localhost:8080}
+  WECHAT_WEB_APP_ID: ${WECHAT_WEB_APP_ID:-}
+  WECHAT_WEB_SECRET: ${WECHAT_WEB_SECRET:-}
+  WECHAT_MP_APP_ID: ${WECHAT_MP_APP_ID:-}
+  WECHAT_MP_SECRET: ${WECHAT_MP_SECRET:-}
+  WECHAT_MINI_APP_ID: ${WECHAT_MINI_APP_ID:-}
+  WECHAT_MINI_SECRET: ${WECHAT_MINI_SECRET:-}
+  WECHAT_APP_APP_ID: ${WECHAT_APP_APP_ID:-}
+  WECHAT_APP_SECRET: ${WECHAT_APP_SECRET:-}
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-app}
+      POSTGRES_DB: ${POSTGRES_DB:-app}
+    volumes:
+      - postgres-data:/var/lib/postgresql # 18+ 的 PGDATA 是 /var/lib/postgresql/18/docker
+    ports:
+      - "5432:5432" # 本地用 psql/GUI 工具连接用；只在内部网络访问可以删掉这一段
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-app} -d ${POSTGRES_DB:-app}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 512M
+
+  # 默认不连 Redis（商品不缓存、限流按进程内存计数）。需要时
+  # 取消注释，并给 api/worker 补 REDIS_ADDR=redis:6379 环境变量。
+  # redis:
+  #   image: redis:8-alpine
+  #   ports:
+  #     - "6379:6379"
+  #   healthcheck:
+  #     test: ["CMD", "redis-cli", "ping"]
+  #     interval: 5s
+  #     timeout: 5s
+  #     retries: 10
+  #   deploy:
+  #     resources:
+  #       limits:
+  #         cpus: "0.5"
+  #         memory: 256M
+
+  # 一次性按模块把迁移跑到最新版本就退出，只需要数据库配置。
+  migrate:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: api
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_DSN: postgres://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD:-app}@postgres:5432/${POSTGRES_DB:-app}?sslmode=disable
+    command: ["/app/api", "migrate", "up"]
+    restart: "no"
+
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: api
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      APP_ENV: development
+      LOG_LEVEL: info
+      HTTP_ADDR: :8080
+      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-http://localhost:5173}
+      DB_DSN: postgres://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD:-app}@postgres:5432/${POSTGRES_DB:-app}?sslmode=disable
+      # DEV-ONLY 默认值，生产环境必须覆盖（见上面文件头的说明）。
+      JWT_SIGNING_KEY: ${JWT_SIGNING_KEY:-dev-only-signing-key-change-me}
+      JWT_KEY_ID: ${JWT_KEY_ID:-dev}
+      <<: *auth-env
+      # 后台：页面和 /admin/v1 都在这个端口上，浏览器打开 http://localhost:8081。首个管理员用
+      # `docker compose -f deploy/docker-compose.yml run --rm api staff create -username root` 创建。
+      # 只发布到宿主机的 127.0.0.1：后台不该暴露在公网入口上，远程访问经 HTTPS 反代，
+      # 生产环境把 HTTP_ADMIN_ORIGIN 改成反代后的 HTTPS 地址。
+      HTTP_ADMIN_ADDR: :8081
+      HTTP_ADMIN_ORIGIN: ${HTTP_ADMIN_ORIGIN:-http://localhost:8081}
+    ports:
+      - "8080:8080"
+      - "127.0.0.1:8081:8081"
+    healthcheck:
+      test: ["CMD", "/app/api", "healthcheck"]
+      interval: 10s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 512M
+
+  worker:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      APP_ENV: development
+      LOG_LEVEL: info
+      HTTP_INTERNAL_ADDR: :9090
+      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-http://localhost:5173}
+      DB_DSN: postgres://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD:-app}@postgres:5432/${POSTGRES_DB:-app}?sslmode=disable
+      JWT_SIGNING_KEY: ${JWT_SIGNING_KEY:-dev-only-signing-key-change-me}
+      JWT_KEY_ID: ${JWT_KEY_ID:-dev}
+      <<: *auth-env
+    # 内部健康检查/指标端口不发布到宿主机——健康状态靠
+    # HEALTHCHECK 走容器内部探测，不需要从宿主机访问这个端口。
+    healthcheck:
+      test: ["CMD", "/app/worker", "healthcheck"]
+      interval: 10s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 512M
+
+volumes:
+  postgres-data:
+
+# ---- Podman 说明 ----
+# 已在 Podman 5.8 rootless + SELinux enforcing（Fedora）+ podman-compose 1.6 上验证：
+# 栈能起来，下单后 worker 把订单确认为 confirmed。注意：
+#
+# - `podman compose` 只是转发给 compose 实现：装了 docker-compose 就用它（经 Podman 的
+#   API socket），否则用 podman-compose。
+# - podman-compose 不执行 `condition: service_completed_successfully`：migrate 失败时
+#   api/worker 照样启动，api 的 /readyz 只检查连得上库，仍会显示 healthy。起栈后用
+#   `podman ps -a` 确认 migrate 是 Exited (0)。
+# - `podman build` 默认 OCI 格式，会丢掉 Dockerfile 里的 HEALTHCHECK（只打 warning）。
+#   compose 里的 healthcheck 不受影响；单独 `podman run` 镜像需要健康检查时用
+#   `podman build --format docker`。
+# - 健康检查由 systemd 用户会话的定时器驱动；没有用户会话（ssh 未开 linger、某些 CI）
+#   时状态停在 starting，`service_healthy` 会一直等。
+# - 镜像写的是短名（postgres:18-alpine），按 registries.conf 的
+#   unqualified-search-registries 解析，可以借此走国内镜像站；系统默认的
+#   short-name-mode = "enforcing" 在多个搜索仓库、无 TTY 时会报错，需要在
+#   ~/.config/containers/registries.conf 里只留一个搜索仓库或改成 permissive。

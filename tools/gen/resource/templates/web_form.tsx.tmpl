@@ -1,0 +1,139 @@
+{{- if .HasUpdate}}
+import { useQueryClient } from "@tanstack/react-query";
+{{- end}}
+{{- if .HasCreate}}
+import { Plus } from "lucide-react";
+{{- end}}
+import type { z } from "zod";
+
+import { {{if .HasCreate}}{{.CreateMeta}}{{end}}{{if and .HasCreate .HasUpdate}}, {{end}}{{if .HasUpdate}}{{.UpdateMeta}}{{end}}{{range .EnumMetas (FormFields .)}}, {{.}}{{end}} } from "@/api/meta.gen";
+import { useAppForm } from "@/components/form";
+import { FormDialog, useDialog } from "@/components/overlay";
+import { Button } from "@/components/ui/button";
+import { toast } from "@/components/ui/toast";
+{{- if UsesEnumOptions (FormFields .)}}
+import { enumOptions } from "@/lib/enum-options";
+{{- end}}
+{{- if .UsesCentsToYuan}}
+import { centsToYuan } from "@/lib/money";
+{{- end}}
+{{- if or (.FieldErrors "create") (.FieldErrors "update")}}
+import { serverField } from "@/lib/server-error";
+{{- end}}
+
+import {
+  {{- if .HasUpdate}} type {{.N.Type}}, {{camel .N.Resource}}Query,{{end}}
+  {{- if .FieldErrors "create"}} {{FieldErrorsVar "create"}},{{end}}
+  {{- if .FieldErrors "update"}} {{FieldErrorsVar "update"}},{{end}}
+  {{- if .HasCreate}} {{.Hook "create"}},{{end}}
+  {{- if .HasUpdate}} {{.Hook "update"}},{{end}}
+} from "./queries";
+{{- if .HasCreate}}
+
+// 表单里的值是输入框里的字符串（开关是布尔值），提交时由 schema 校验并转换成请求体。
+const blank: z.input<typeof {{.CreateMeta}}.form> = {
+{{- range .Create}}
+  {{.Name}}: {{.BlankValue}},
+{{- end}}
+};
+
+export function Create{{.N.Type}}Dialog() {
+  const dialog = useDialog();
+  const create = {{.Hook "create"}}();
+  const { fields, form: schema } = {{.CreateMeta}};
+  const form = useAppForm({
+    defaultValues: blank,
+    validators: { onSubmit: schema },
+    onSubmit: async ({ value{{if .FieldErrors "create"}}, formApi{{end}} }) => {
+{{- if .FieldErrors "create"}}
+      try {
+        await create.mutateAsync(schema.parse(value));
+      } catch (e) {
+        const field = serverField(e, {{FieldErrorsVar "create"}});
+        if (!field) throw e;
+        formApi.setFieldMeta(field.name, (m) => ({ ...m, errorMap: { ...m.errorMap, onServer: field.message } }));
+        return;
+      }
+{{- else}}
+      await create.mutateAsync(schema.parse(value));
+{{- end}}
+      toast.add({ title: "已创建" });
+      dialog.close();
+    },
+  });
+  return (
+    <FormDialog
+      {...dialog}
+      form={form}
+      onOpen={() => form.reset(blank)}
+      trigger={
+        <Button>
+          <Plus />
+          新建{{.D.Title}}
+        </Button>
+      }
+      title="新建{{.D.Title}}"
+      submitText="创建"
+    >
+{{- range $i, $f := .Create}}
+      {{$.FormField $f "fields" (eq $i 0)}}
+{{- end}}
+    </FormDialog>
+  );
+}
+{{- end}}
+{{- if .HasUpdate}}
+
+// version 是打开表单（或冲突后刷新）时读到的版本，原样提交。
+const editValues = (v: {{.N.Type}}): z.input<typeof {{.UpdateMeta}}.form> => ({
+{{- range .Update}}
+  {{.Name}}: {{.EditValue "v"}},
+{{- end}}
+  version: v.version,
+});
+
+export function Edit{{.N.Type}}Dialog({ {{camel .N.Resource}} }: { {{camel .N.Resource}}: {{.N.Type}} }) {
+  const dialog = useDialog();
+  const update = {{.Hook "update"}}();
+  const queryClient = useQueryClient();
+  const { fields, form: schema } = {{.UpdateMeta}};
+  const form = useAppForm({
+    defaultValues: editValues({{camel .N.Resource}}),
+    validators: { onSubmit: schema },
+    onSubmit: async ({ value{{if .FieldErrors "update"}}, formApi{{end}} }) => {
+{{- if .FieldErrors "update"}}
+      try {
+        await update.mutateAsync({ id: {{camel .N.Resource}}.id, ...schema.parse(value) });
+      } catch (e) {
+        const field = serverField(e, {{FieldErrorsVar "update"}});
+        if (!field) throw e;
+        formApi.setFieldMeta(field.name, (m) => ({ ...m, errorMap: { ...m.errorMap, onServer: field.message } }));
+        return;
+      }
+{{- else}}
+      await update.mutateAsync({ id: {{camel .N.Resource}}.id, ...schema.parse(value) });
+{{- end}}
+      toast.add({ title: "已保存" });
+      dialog.close();
+    },
+  });
+  return (
+    <FormDialog
+      {...dialog}
+      form={form}
+      onOpen={() => form.reset(editValues({{camel .N.Resource}}))}
+      onConflict={async () => {
+        const latest = await queryClient.fetchQuery({ ...{{camel .N.Resource}}Query({{camel .N.Resource}}.id), staleTime: 0 });
+        form.reset(editValues(latest));
+      }}
+      trigger={<Button variant="outline">修改</Button>}
+      title={`修改{{.D.Title}}：${ {{- camel .N.Resource}}.{{.D.Display}}}`}
+      submitText="保存"
+    >
+{{- range $i, $f := .Update}}
+      {{$.FormField $f "fields" (eq $i 0)}}
+{{- end}}
+    </FormDialog>
+  );
+}
+{{- end}}

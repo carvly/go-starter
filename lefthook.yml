@@ -1,0 +1,59 @@
+# 提交钩子：把 CI 里的检查提前到本地，按耗时分层（见 docs/agents/workflow.md）。
+# 安装：make setup。agent 不得自行使用 --no-verify 跳过钩子；钩子失败就修代码。
+# CI 跑同一组检查，钩子只是提前一步拦截。
+
+pre-commit:
+  parallel: true
+  commands:
+    gofmt:
+      glob: "*.go"
+      run: gofmt -w {staged_files}
+      stage_fixed: true
+    golangci-lint:
+      glob: "*.go"
+      run: make lint-new
+    vet:
+      glob: "*.go"
+      run: go vet -tags=integration,genfixture ./...
+    # 本机没装 shellcheck 时跳过，不挡提交；CI 里一定会跑。
+    shellcheck:
+      glob: "*.sh"
+      run: command -v shellcheck >/dev/null || exit 0; shellcheck -x {staged_files}
+    # 只提示可能受影响的文档，不拦截提交；逐篇核对见 docs/agents/workflow.md 的"文档"。
+    doc-impact:
+      run: scripts/doc-impact.sh --staged
+    # 后台前端：只检查暂存的文件，完整检查（typecheck、test、knip、build）在 CI 的 admin-web 工作流。
+    # 需要先在 web/admin 里 pnpm install。
+    web-lint:
+      root: web/admin/
+      glob: "*.{ts,tsx}"
+      run: pnpm exec oxlint --deny-warnings --no-error-on-unmatched-pattern {staged_files}
+    web-format:
+      root: web/admin/
+      glob: "*.{ts,tsx,js,json,css,html,md,yaml}"
+      run: pnpm exec oxfmt --no-error-on-unmatched-pattern {staged_files}
+      stage_fixed: true
+    # shadcn CLI 写入的文件只能经 pnpm ui:add / ui:update 修改，手改会被它发现。
+    web-ui:
+      root: web/admin/
+      glob: "*"
+      run: pnpm ui:check
+
+pre-push:
+  parallel: true
+  commands:
+    test:
+      run: go test ./...
+    check-docs:
+      run: scripts/check-docs.sh
+    check-versions:
+      run: scripts/check-versions.sh
+    # 和 CI 的一致性检查相同：生成代码和 go.mod 要和 spec、实际依赖一致并已提交。
+    # go mod tidy -diff 只比较不改文件；go generate 会重写派生文件，不一致时改动留在工作区。
+    tidy:
+      run: go mod tidy -diff
+    generated:
+      run: >-
+        go generate ./... &&
+        test -z "$(git status --porcelain -- 'internal/modules/*/httpapi/oapi/api.gen.go' 'internal/modules/*/adminapi/oapi/api.gen.go' web/admin/src/api/meta.gen.ts)" ||
+        { echo "生成代码与 api/openapi.yaml、api/admin.yaml 不一致或尚未提交：make generate 后提交"; exit 1; }

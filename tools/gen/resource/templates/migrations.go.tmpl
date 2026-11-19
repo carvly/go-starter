@@ -1,0 +1,12 @@
+package {{.N.Module}}
+
+import (
+	"embed"
+
+	"{{.GoMod}}/internal/platform/migrate"
+)
+
+//go:embed migrations
+var migrationFiles embed.FS
+
+var Migrations = migrate.Source{Name: "{{.N.Module}}", FS: migrationFiles}

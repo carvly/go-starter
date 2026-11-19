@@ -1,0 +1,55 @@
+name: Modules
+
+# 对每个模块演练一次删除（scripts/check-module-removal.sh），约 1 分钟，只在可能
+# 影响模块边界的路径变化时运行（含后台页面：演练会删掉模块的页面再做类型检查）。
+on:
+  push:
+    branches: [main]
+    paths:
+      - "internal/**"
+      - "api/**"
+      - "web/admin/src/**"
+      - "web/admin/scripts/**"
+      - "scripts/check-module-removal.sh"
+      - ".github/workflows/modules.yml"
+  pull_request:
+    paths:
+      - "internal/**"
+      - "api/**"
+      - "web/admin/src/**"
+      - "web/admin/scripts/**"
+      - "scripts/check-module-removal.sh"
+      - ".github/workflows/modules.yml"
+
+# GITHUB_TOKEN 只给读权限：这些 job 都不需要写仓库。
+permissions:
+  contents: read
+
+# 同一个 PR 连续推送时取消旧的运行；main 上的每次推送都跑完。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  removal-drill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.27"
+      # 删除演练还要检查删掉模块的后台页面之后，其余页面照样通过类型检查。
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: web/admin/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: web/admin/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: web/admin
+      - run: scripts/check-module-removal.sh

@@ -1,0 +1,58 @@
+import { useSuspenseQuery } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
+import { ArrowLeft } from "lucide-react";
+
+import { {{.EntityMeta}}{{range .EnumMetas .DetailFields}}, {{.}}{{end}} } from "@/api/meta.gen";
+import { {{.DetailCellComponents}} } from "@/components/data-table/cells";
+import { DescriptionItem, DescriptionList } from "@/components/overlay";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+{{- if .HasUpdate}}
+import { useCan } from "@/features/auth/queries";
+{{- end}}
+import { formatDateTime } from "@/lib/format";
+
+{{if or .Actions .HasDelete}}import { {{.N.Type}}Actions } from "./actions";
+{{end}}{{if .HasUpdate}}import { Edit{{.N.Type}}Dialog } from "./form";
+{{end}}import { {{camel .N.Resource}}Query } from "./queries";
+
+const { fields } = {{.EntityMeta}};
+
+export function {{.DetailComponent}}({ id }: { id: string }) {
+  const { data: v } = useSuspenseQuery({{camel .N.Resource}}Query(id));
+{{- if .HasUpdate}}
+  const canUpdate = useCan("{{.Permission "update"}}");
+{{- end}}
+  return (
+    <div className="flex flex-col gap-4">
+      <Link to="{{.Route}}" className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
+        <ArrowLeft className="size-4" />
+        {{.D.Title}}
+      </Link>
+      <Card>
+        <CardHeader>
+          <CardTitle>{v.{{.D.Display}}}</CardTitle>
+          <CardDescription>
+            创建于 {formatDateTime(v.created_at)} · 更新于 {formatDateTime(v.updated_at)}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+{{- if .HasDetailActions}}
+          <div className="flex flex-wrap gap-2">
+{{- if .HasUpdate}}
+            {canUpdate && <Edit{{.N.Type}}Dialog {{camel .N.Resource}}={v} />}
+{{- end}}
+{{- if or .Actions .HasDelete}}
+            <{{.N.Type}}Actions {{camel .N.Resource}}={v} />
+{{- end}}
+          </div>
+{{- end}}
+          <DescriptionList>
+{{- range .DetailFields}}
+            <DescriptionItem label={fields.{{.Name}}.title}>{{$.DetailCell . "v"}}</DescriptionItem>
+{{- end}}
+          </DescriptionList>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}

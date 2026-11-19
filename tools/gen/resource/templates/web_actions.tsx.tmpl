@@ -1,0 +1,148 @@
+{{- if .HasDelete}}
+import { useNavigate } from "@tanstack/react-router";
+{{- end}}
+{{- if .InputActions}}
+import type { z } from "zod";
+{{- end}}
+
+{{if .InputActions}}import { {{range $i, $a := .InputActions}}{{if $i}}, {{end}}{{$.InputMeta $a}}{{end}}{{range .EnumMetas .ActionInputs}}, {{.}}{{end}} } from "@/api/meta.gen";
+{{end}}{{if .UsesConfirmButton}}import { ConfirmButton } from "@/components/confirm-button";
+{{end}}
+{{- if .InputActions}}
+import { useAppForm } from "@/components/form";
+import { FormDialog, useDialog } from "@/components/overlay";
+import { Button } from "@/components/ui/button";
+{{- end}}
+import { toast } from "@/components/ui/toast";
+import { useCan } from "@/features/auth/queries";
+{{- if UsesEnumOptions .ActionInputs}}
+import { enumOptions } from "@/lib/enum-options";
+{{- end}}
+{{- if .ActionFieldErrors}}
+import { serverField } from "@/lib/server-error";
+{{- end}}
+
+import {
+  type {{.N.Type}},
+{{- range $a := .Actions}}
+{{- with $.FieldErrors $a.Name}}
+  {{FieldErrorsVar $a.Name}},
+{{- end}}
+{{- end}}
+{{- if .HasDelete}}
+  {{.Hook "delete"}},
+{{- end}}
+{{- range .Actions}}
+  {{$.ActionHook .}},
+{{- end}}
+} from "./queries";
+
+// 详情页上的操作按钮：按权限显示；有前置条件的动作只在记录满足条件时显示。
+export function {{.N.Type}}Actions({ {{camel .N.Resource}}: v }: { {{camel .N.Resource}}: {{.N.Type}} }) {
+{{- range .Actions}}
+  const can{{pascal .Name}} = useCan("{{$.Permission .Name}}");
+{{- if not .Input}}
+  const {{camel .Name}}Action = {{$.ActionHook .}}();
+{{- end}}
+{{- end}}
+{{- if .HasDelete}}
+  const canDelete = useCan("{{.Permission "delete"}}");
+  const remove = {{.Hook "delete"}}();
+  const navigate = useNavigate();
+{{- end}}
+  return (
+    <>
+{{- range .Actions}}
+{{- if .Input}}
+      {{"{"}}{{$.ActionShow . "v"}} && <{{$.ActionDialog .}} {{camel $.N.Resource}}={v} />}
+{{- else}}
+      {{"{"}}{{$.ActionShow . "v"}} && (
+        <ConfirmButton
+          title={`{{.Title}}{{$.D.Title}}：${v.{{$.D.Display}}}？`}
+{{- if .Confirm}}
+          description={ {{js .Confirm}} }
+{{- end}}
+          confirmText={ {{js .Title}} }
+          disabled={ {{- camel .Name}}Action.isPending}
+          onConfirm={() => {{camel .Name}}Action.mutate(v.id, { onSuccess: () => toast.add({ title: {{js (printf "已%s" .Title)}} }) })}
+        >
+          {{.Title}}
+        </ConfirmButton>
+      )}
+{{- end}}
+{{- end}}
+{{- if .HasDelete}}
+      {canDelete && (
+        <ConfirmButton
+          title={`删除{{.D.Title}}：${v.{{.D.Display}}}？`}
+          description="删除后不能恢复。"
+          confirmText="删除"
+          variant="destructive"
+          disabled={remove.isPending}
+          onConfirm={() =>
+            remove.mutate(v.id, {
+              onSuccess: () => {
+                toast.add({ title: "已删除" });
+                void navigate({ to: "{{.Route}}" });
+              },
+            })
+          }
+        >
+          删除
+        </ConfirmButton>
+      )}
+{{- end}}
+    </>
+  );
+}
+{{- range $a := .InputActions}}
+
+const {{camel $a.Name}}Blank: z.input<typeof {{$.InputMeta $a}}.form> = {
+{{- range $a.Input}}
+  {{.Name}}: {{.BlankValue}},
+{{- end}}
+};
+
+function {{$.ActionDialog $a}}({ {{camel $.N.Resource}}: v }: { {{camel $.N.Resource}}: {{$.N.Type}} }) {
+  const dialog = useDialog();
+  const mutation = {{$.ActionHook $a}}();
+  const { fields, form: schema } = {{$.InputMeta $a}};
+  const form = useAppForm({
+    defaultValues: {{camel $a.Name}}Blank,
+    validators: { onSubmit: schema },
+    onSubmit: async ({ value{{if $.FieldErrors $a.Name}}, formApi{{end}} }) => {
+{{- if $.FieldErrors $a.Name}}
+      try {
+        await mutation.mutateAsync({ id: v.id, ...schema.parse(value) });
+      } catch (e) {
+        const field = serverField(e, {{FieldErrorsVar $a.Name}});
+        if (!field) throw e;
+        formApi.setFieldMeta(field.name, (m) => ({ ...m, errorMap: { ...m.errorMap, onServer: field.message } }));
+        return;
+      }
+{{- else}}
+      await mutation.mutateAsync({ id: v.id, ...schema.parse(value) });
+{{- end}}
+      toast.add({ title: {{js (printf "已%s" $a.Title)}} });
+      dialog.close();
+    },
+  });
+  return (
+    <FormDialog
+      {...dialog}
+      form={form}
+      onOpen={() => form.reset({{camel $a.Name}}Blank)}
+      trigger={<Button variant="outline">{{$a.Title}}</Button>}
+      title={`{{$a.Title}}：${v.{{$.D.Display}}}`}
+{{- if $a.Confirm}}
+      description={ {{js $a.Confirm}} }
+{{- end}}
+      submitText={ {{js $a.Title}} }
+    >
+{{- range $i, $f := $a.Input}}
+      {{$.FormField $f "fields" (eq $i 0)}}
+{{- end}}
+    </FormDialog>
+  );
+}
+{{- end}}

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "entry": ["scripts/*.ts"],
+  "project": ["src/**/*.{ts,tsx}", "scripts/**/*.ts"],
+  "ignore": ["src/lib/utils.ts"],
+  "rules": { "exports": "error", "types": "error" },
+  "ignoreExportsUsedInFile": true,
+  "ignoreIssues": {
+    "src/components/ui/**": ["exports", "types"],
+    "src/hooks/**": ["exports", "types"],
+    "src/api/meta.gen.ts": ["exports"]
+  }
+}

@@ -1,0 +1,218 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# GITHUB_TOKEN 只给读权限：这些 job 都不需要写仓库。
+permissions:
+  contents: read
+
+# 同一个 PR 连续推送时取消旧的运行；main 上的每次推送都跑完。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # 静态检查 + 单元测试 + 架构测试 + 构建，不需要 Docker。
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.27"
+
+      - name: go vet
+        run: go vet -tags=integration,genfixture ./...
+
+      - name: shellcheck
+        # scripts/ 是各项检查本身，要能在 macOS 原装的 bash 3.2 和 Linux 上跑（见 workflow.md 的"脚本"）。
+        run: shellcheck -x scripts/*.sh
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.15.0
+
+      - name: govulncheck
+        # 固定版本，跟 Makefile 的 GOVULNCHECK 保持一致——@latest 会让
+        # CI 单纯因为上游发新版就变红/变绿，与本仓库改动无关。
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.10.0 ./...
+
+      - name: go mod verify
+        run: go mod verify
+
+      - name: oapi-codegen 一致性检查
+        # 改了 spec 忘记 go generate 会让代码和 spec 悄悄脱节。用 git status
+        # --porcelain 而不是 git diff：后者看不到未跟踪的新文件。
+        run: |
+          go generate ./...
+          if [ -n "$(git status --porcelain -- 'internal/modules/*/httpapi/oapi/api.gen.go')" ]; then
+            echo "::error::internal/modules/*/httpapi/oapi/api.gen.go 与 api/openapi.yaml 不一致（或尚未提交），本地跑 'make generate' 后提交"
+            exit 1
+          fi
+          if [ -n "$(git status --porcelain -- 'internal/modules/*/adminapi/oapi/api.gen.go' web/admin/src/api/meta.gen.ts)" ]; then
+            echo "::error::internal/modules/*/adminapi/oapi/api.gen.go 或 web/admin/src/api/meta.gen.ts 与 api/admin.yaml 不一致（或尚未提交），本地跑 'make generate' 后提交"
+            exit 1
+          fi
+
+      - name: go mod tidy 一致性检查
+        run: |
+          go mod tidy
+          if [ -n "$(git status --porcelain -- go.mod go.sum)" ]; then
+            echo "::error::go.mod/go.sum 与实际依赖不一致（或是尚未提交的新文件），本地跑 'go mod tidy' 后提交"
+            exit 1
+          fi
+
+      - name: go test（含 internal/archtest 架构测试）
+        run: go test ./...
+
+      - name: 文档引用的路径必须存在
+        run: scripts/check-docs.sh
+
+      - name: 跨文件版本号一致
+        run: scripts/check-versions.sh
+
+      - name: 构建二进制
+        run: |
+          go build -o bin/api ./cmd/api
+          go build -o bin/worker ./cmd/worker
+
+  # 真实 Postgres 上的 Repository 契约测试、dbtx、队列入队（testcontainers-go，
+  # GitHub 托管的 runner 自带 Docker）。
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.27"
+      - run: go test -tags=integration ./...
+
+  # 密钥泄露扫描，独立 job 并行跑。
+  gitleaks:
+    runs-on: ubuntu-latest
+    # gitleaks-action 在 PR 上要经 API 读取这个 PR 的提交列表。
+    permissions:
+      contents: read
+      pull-requests: read
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # 只校验 YAML 本身是合法的 OpenAPI 3.2；与实现一致由生成代码一致性检查和
+  # internal/app 的路由/spec 双向比对测试保证。
+  openapi-lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - run: npx --yes @redocly/cli@2.82.0 lint api/openapi.yaml api/admin.yaml
+
+  # 镜像编得出来即可，不 push。
+  docker-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        target: [api, worker]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: deploy/Dockerfile
+          target: ${{ matrix.target }}
+          push: false
+
+  # 端到端：起完整栈（api+worker+postgres），在后台建商品、前台下单，确认 worker 真的消费了
+  # order_created 事件、订单状态从 pending 变成 confirmed。
+  compose-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      JWT_SIGNING_KEY: ci-test-signing-key-not-for-production
+      JWT_KEY_ID: ci-test-kid
+      CORS_ALLOW_ORIGINS: http://localhost:5173
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: 启动完整栈
+        run: docker compose -f deploy/docker-compose.yml up -d --build
+
+      - name: 等待 api /readyz 变健康
+        run: |
+          for _ in $(seq 1 30); do
+            if curl -sf http://localhost:8080/readyz > /dev/null; then
+              echo "api ready"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::api 在 150s 内没有变 ready"
+          docker compose -f deploy/docker-compose.yml logs api
+          exit 1
+
+      - name: 等待 worker HEALTHCHECK 变健康
+        run: |
+          worker_id=$(docker compose -f deploy/docker-compose.yml ps -q worker)
+          for _ in $(seq 1 30); do
+            status=$(docker inspect --format='{{.State.Health.Status}}' "$worker_id" 2>/dev/null || echo "starting")
+            echo "worker health: $status"
+            if [ "$status" = "healthy" ]; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::worker 在 150s 内没有变 healthy"
+          docker compose -f deploy/docker-compose.yml logs worker
+          exit 1
+
+      - name: 读取保留的模块能力
+        run: |
+          removed=""
+          if [ -f starter-removed.yaml ]; then
+            removed=$(sed -nE 's/^removed_modules:[[:space:]]*\[([^]]*)\].*/\1/p' starter-removed.yaml | tr -d ' ')
+          fi
+          case ",$removed," in *,staff,*) echo "STAFF_ENABLED=false" >> "$GITHUB_ENV" ;; *) echo "STAFF_ENABLED=true" >> "$GITHUB_ENV" ;; esac
+          case ",$removed," in *,auth,*) echo "AUTH_ENABLED=false" >> "$GITHUB_ENV" ;; *) echo "AUTH_ENABLED=true" >> "$GITHUB_ENV" ;; esac
+
+      - name: starter 通用冒烟——后台员工、角色和操作日志
+        if: env.STAFF_ENABLED == 'true'
+        run: scripts/ci-staff-smoke.sh
+
+      - name: starter 通用冒烟——auth_cleanup 启动时执行
+        if: env.AUTH_ENABLED == 'true'
+        run: docker compose -f deploy/docker-compose.yml logs worker | grep 'auth: purged expired rows'
+
+      - name: 项目业务冒烟（存在 project/ci/smoke.sh 时）
+        run: |
+          if [ -f project/ci/smoke.sh ]; then
+            set -a
+            [ ! -f project/ci/env ] || . project/ci/env
+            set +a
+            project/ci/smoke.sh
+          fi
+
+      - name: 停止并清理
+        if: always()
+        run: docker compose -f deploy/docker-compose.yml down -v

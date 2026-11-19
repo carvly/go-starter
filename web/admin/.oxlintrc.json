@@ -1,0 +1,49 @@
+{
+  "plugins": ["unicorn", "typescript", "oxc", "react"],
+  "rules": {
+    "no-console": "error",
+    "react-hooks/rules-of-hooks": "error",
+    "react-hooks/exhaustive-deps": "warn"
+  },
+  "ignorePatterns": [
+    "**/*.{mjs,cjs,js,d.ts}",
+    "dist/",
+    "node_modules/",
+    "src/routeTree.gen.ts",
+    "src/api/meta.gen.ts",
+    "src/components/ui/**",
+    "src/hooks/**",
+    "src/lib/utils.ts"
+  ],
+  "overrides": [
+    {
+      "files": ["**/*.test.{ts,tsx}", "scripts/**"],
+      "rules": {
+        "no-console": "off"
+      }
+    },
+    {
+      "files": ["src/features/**", "src/routes/**"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": [
+                  "@base-ui/react",
+                  "@base-ui/react/*",
+                  "@tanstack/react-table",
+                  "@tanstack/react-form",
+                  "react-day-picker",
+                  "react-day-picker/*"
+                ],
+                "message": "features 和 routes 只经 src/components/ 的公共组件使用 Base UI、TanStack Table、TanStack Form、react-day-picker（统一外观和行为，见 docs/agents/admin.md）"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

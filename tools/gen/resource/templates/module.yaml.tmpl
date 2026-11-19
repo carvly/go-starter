@@ -1,0 +1,7 @@
+{{- if .Admin}}
+web_paths:
+  - web/admin/src/features/{{.Feature}}
+  - web/admin/src/routes/_authed/{{.Feature}}
+{{- else}}
+web_paths: []
+{{- end}}

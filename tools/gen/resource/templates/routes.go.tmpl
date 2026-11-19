@@ -1,0 +1,34 @@
+package {{.N.APIPackage}}
+
+import (
+	"github.com/labstack/echo/v5"
+
+	"{{.GoMod}}/internal/modules/{{.N.Module}}/{{.N.APIPackage}}/oapi"
+)
+{{if .Admin}}
+// Register 挂载 api/admin.yaml 中 tag={{.N.Tag}} 的全部操作。登录和权限检查由后台 server
+// 分组上的鉴权中间件按 x-permission 统一做，这里没有操作级中间件。
+func Register(g *echo.Group, h *Handler) {
+	oapi.RegisterHandlers(g, h)
+}
+{{else if .WebAuth}}
+type Middlewares struct {
+	Auth echo.MiddlewareFunc
+}
+
+// Register 挂载 api/openapi.yaml 中 tag={{.N.Tag}} 的全部操作，需要登录的操作按 operationId 挂鉴权中间件。
+func Register(g *echo.Group, h *Handler, mw Middlewares) {
+	oapi.RegisterHandlersWithOptions(g, h, oapi.RegisterHandlersOptions{
+		OperationMiddlewares: map[string][]echo.MiddlewareFunc{
+{{- range .WebAuth}}
+			{{q .}}: {mw.Auth},
+{{- end}}
+		},
+	})
+}
+{{else}}
+// Register 挂载 api/openapi.yaml 中 tag={{.N.Tag}} 的全部操作，都不需要登录。
+func Register(g *echo.Group, h *Handler) {
+	oapi.RegisterHandlers(g, h)
+}
+{{end}}

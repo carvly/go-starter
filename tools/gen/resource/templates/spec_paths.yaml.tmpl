@@ -1,0 +1,246 @@
+
+  {{.N.Path}}:
+{{- if or .Admin .WebList}}
+    get:
+      operationId: {{.N.OpList}}
+      tags: [{{.N.Tag}}]
+      summary: {{yq (printf "%s列表" .D.Title)}}
+{{- if .Admin}}
+      description: {{yq (printf "页码分页，默认按 %s%s排序。" .DefaultSort (ternary .DefaultDesc " 倒序" " "))}}
+      x-permission: {{.N.Permission}}:read
+{{- else}}
+      description: 按创建时间倒序，cursor 分页。
+{{- if not (has .WebAuth .N.OpList)}}
+      security: []
+{{- end}}
+{{- end}}
+      parameters:
+{{- if .Admin}}
+{{- if .Search}}
+        - name: q
+          in: query
+          required: false
+          description: {{yq (printf "%s包含这个关键字（不区分大小写）" (titles .Search))}}
+          schema:
+            type: string
+{{- end}}
+{{- range .Filters}}
+{{- if eq .Type "enum"}}
+        - name: {{.Name}}
+          in: query
+          required: false
+          description: {{yq (printf "%s，多个用逗号分隔，满足任一即可" .Title)}}
+          style: form
+          explode: false
+          schema:
+            type: array
+            items:
+              $ref: "#/components/schemas/{{.EnumType}}"
+{{- else if eq .Type "bool"}}
+        - name: {{.Name}}
+          in: query
+          required: false
+          description: {{yq .Title}}
+          schema:
+            type: boolean
+{{- else}}
+        - name: {{.Name}}_from
+          in: query
+          required: false
+          description: {{yq (printf "%s起（含）" .Title)}}
+          schema:
+            type: string
+            format: {{if eq .Type "date"}}date{{else}}date-time{{end}}
+        - name: {{.Name}}_to
+          in: query
+          required: false
+          description: {{yq (printf "%s止（不含）" .Title)}}
+          schema:
+            type: string
+            format: {{if eq .Type "date"}}date{{else}}date-time{{end}}
+{{- end}}
+{{- end}}
+        - name: sort
+          in: query
+          required: false
+          description: {{yq (printf "排序字段，- 前缀表示倒序；默认 %s%s" (ternary .DefaultDesc "-" "") .DefaultSort)}}
+          schema:
+            type: string
+            enum: [{{.SortEnum}}]
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Size"
+{{- else}}
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+{{- end}}
+      responses:
+        "200":
+          description: {{yq (printf "%s列表" .D.Title)}}
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/{{.N.Type}}{{if .Admin}}Page{{else}}List{{end}}"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+{{- if .Admin}}
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+{{- end}}
+{{- end}}
+{{- if .HasCreate}}
+    post:
+      operationId: {{.N.OpCreate}}
+      tags: [{{.N.Tag}}]
+      summary: {{yq (printf "新建%s" .D.Title)}}
+{{- if .Admin}}
+      x-permission: {{.N.Permission}}:create
+{{- else if not (has .WebAuth .N.OpCreate)}}
+      security: []
+{{- end}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Create{{.N.Type}}Request"
+      responses:
+        "201":
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/{{.N.Type}}"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+{{- if .Admin}}
+        "403":
+          $ref: "#/components/responses/Forbidden"
+{{- end}}
+{{- if .CreateConflict}}
+        "409":
+          $ref: "#/components/responses/Conflict"
+{{- end}}
+{{- end}}
+{{- if or .Admin .WebGet}}
+
+  {{.N.Path}}/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    get:
+      operationId: {{.N.OpGet}}
+      tags: [{{.N.Tag}}]
+      summary: {{yq (printf "%s详情" .D.Title)}}
+{{- if .Admin}}
+      x-permission: {{.N.Permission}}:read
+{{- else if not (has .WebAuth .N.OpGet)}}
+      security: []
+{{- end}}
+      responses:
+        "200":
+          description: {{yq (printf "%s详情" .D.Title)}}
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/{{.N.Type}}"
+{{- if .Admin}}
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+{{- end}}
+        "404":
+          $ref: "#/components/responses/NotFound"
+{{- end}}
+{{- if .HasUpdate}}
+    put:
+      operationId: {{.N.OpUpdate}}
+      tags: [{{.N.Tag}}]
+      summary: {{yq (printf "修改%s" .D.Title)}}
+      description: 请求体是可编辑字段的全量，加上打开表单时读到的 version；version 已经不是最新时返回 409 {{.N.Resource}}_conflict。
+      x-permission: {{.N.Permission}}:update
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Update{{.N.Type}}Request"
+      responses:
+        "200":
+          description: 已修改
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/{{.N.Type}}"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+{{- end}}
+{{- if .HasDelete}}
+    delete:
+      operationId: {{.N.OpDelete}}
+      tags: [{{.N.Tag}}]
+      summary: {{yq (printf "删除%s" .D.Title)}}
+      x-permission: {{.N.Permission}}:delete
+      responses:
+        "204":
+          description: 已删除
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+{{- if .DeleteConflict}}
+        "409":
+          $ref: "#/components/responses/Conflict"
+{{- end}}
+{{- end}}
+{{- range .Actions}}
+
+  {{.Path}}:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      operationId: {{.Op}}
+      tags: [{{$.N.Tag}}]
+      summary: {{yq .Title}}
+      x-permission: {{$.N.Permission}}:{{.Name}}
+{{- if .Input}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/{{pascal .Name}}{{$.N.Type}}Request"
+{{- end}}
+      responses:
+        "200":
+          description: {{yq (printf "已%s，返回修改后的%s" .Title $.D.Title)}}
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/{{$.N.Type}}"
+{{- if .Input}}
+        "400":
+          $ref: "#/components/responses/BadRequest"
+{{- end}}
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+{{- end}}

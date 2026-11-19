@@ -1,0 +1,98 @@
+import { useQuery } from "@tanstack/react-query";
+
+import { {{.ListMeta}}{{range .EnumMetas .Filters}}, {{.}}{{end}} } from "@/api/meta.gen";
+import { DataTable, PagePager } from "@/components/data-table";
+{{- if .HasFilterBar}}
+import { {{.FilterComponents}} } from "@/components/filters";
+{{- end}}
+{{- if .D.Description}}
+import { TitleWithTip } from "@/components/info-tip";
+{{- end}}
+{{- if .HasCreate}}
+import { useCan } from "@/features/auth/queries";
+{{- end}}
+{{- if .HasEnumFilters}}
+import { enumOptions } from "@/lib/enum-options";
+{{- end}}
+
+import { columns } from "./columns";
+{{- if .HasCreate}}
+import { Create{{.N.Type}}Dialog } from "./form";
+{{- end}}
+import { type {{.FiltersType}}, {{camel .N.Plural}}Query } from "./queries";
+{{- if gt (len .SortFields) 1}}
+
+const sortOptions = [{{.SortOptions}}] as const;
+{{- end}}
+
+export function {{.PageComponent}}({ filters, onChange }: { filters: {{.FiltersType}}; onChange: (f: {{.FiltersType}}) => void }) {
+  const { data, isLoading } = useQuery({{camel .N.Plural}}Query(filters));
+{{- if .HasCreate}}
+  const canCreate = useCan("{{.Permission "create"}}");
+{{- end}}
+{{- if .HasFilterBar}}
+  // 筛选条件或排序变了回到第一页（page 不带上）。
+  const filter = (next: Omit<{{.FiltersType}}, "page">) => onChange({ ...filters, ...next, page: undefined });
+  const filtered = Object.entries(filters).some(([k, v]) => k !== "page" && k !== "sort" && v !== undefined);
+{{- end}}
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex items-center justify-between gap-4">
+        <h1 className="text-lg font-medium">
+          {{- if .D.Description}}
+          <TitleWithTip tip={ {{js .D.Description}} }>{{.D.Title}}</TitleWithTip>
+          {{- else}}
+          {{.D.Title}}
+          {{- end}}
+        </h1>
+{{- if .HasCreate}}
+        {canCreate && <Create{{.N.Type}}Dialog />}
+{{- end}}
+      </div>
+{{- if .HasFilterBar}}
+      <FilterBar>
+{{- if .Search}}
+        <SearchInput value={filters.q} placeholder={ {{js .SearchPlaceholder}} } onSearch={(q) => filter({ q })} />
+{{- end}}
+{{- range .Filters}}
+{{- if eq .Type "enum"}}
+        <EnumFilter
+          label={ {{js ($.FilterTitle .)}} }
+          options={enumOptions({{MetaVar .EnumType}})}
+          value={filters.{{.Name}}}
+          onChange={({{.Name}}) => filter({ {{.Name}} })}
+        />
+{{- else if eq .Type "bool"}}
+        <BoolFilter label={ {{js ($.FilterTitle .)}} } value={filters.{{.Name}}} onChange={({{.Name}}) => filter({ {{.Name}} })} />
+{{- else}}
+        <DateRangeFilter
+          id="{{$.Feature}}-{{.Name}}"
+          label={ {{js ($.FilterTitle .)}} }
+          value={{"{{"}} from: filters.{{.Name}}_from, to: filters.{{.Name}}_to }}
+          onChange={(r) => filter({ {{.Name}}_from: r.from, {{.Name}}_to: r.to })}
+        />
+{{- end}}
+{{- end}}
+{{- if gt (len .SortFields) 1}}
+        <SortSelect options={sortOptions} value={filters.sort} defaultValue="{{.DefaultSortValue}}" onChange={(sort) => filter({ sort })} />
+{{- end}}
+      </FilterBar>
+{{- end}}
+      <DataTable
+        columns={columns}
+        data={data?.items}
+        loading={isLoading}
+        getRowId={(v) => v.id}
+        empty={{if .HasFilterBar}}{filtered ? "没有符合条件的{{.D.Title}}" : "还没有{{.D.Title}}"}{{else}}"还没有{{.D.Title}}"{{end}}
+      />
+      <PagePager
+        page={filters.page ?? 1}
+        size={{"{"}}{{.ListMeta}}.pageSize}
+        total={data?.total}
+        totalCapped={data?.total_capped}
+        onChange={(page) => onChange({ ...filters, page })}
+      />
+    </div>
+  );
+}

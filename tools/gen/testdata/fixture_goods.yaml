@@ -1,0 +1,30 @@
+# 带完整后台读写、编辑和动作的生成器夹具。
+module: goods
+resource: good
+title: 货品
+description: 夹具：形状同商品后台（名称、单价、库存、调整库存）
+display: name
+fields:
+  name:        { type: string, title: 名称, required: true, max: 200 }
+  price_cents: { type: money, title: 单价, required: true, min: 1 }
+  stock:       { type: int, title: 库存, required: true, readonly: true, min: 0, max: 1000000000, help: 新建时填初始库存，之后只能调整 }
+indexes:
+  - columns: [-created_at, -id]
+    for: 后台列表的默认排序：ORDER BY created_at DESC, id DESC LIMIT/OFFSET
+admin:
+  operations: [create, update]
+  list:
+    columns: [name, price_cents, stock, updated_at]
+    search: [name]
+  actions:
+    adjust_stock:
+      title: 调整库存
+      input:
+        delta: { type: int, title: 增减量, required: true, min: -1000000000, max: 1000000000 }
+      custom: >-
+        库存加上 delta：delta 为 0 时返回 invalid_delta；结果必须在 0 到 10 亿之间，否则不改并返回
+        对应的错误；并发调整时不能丢失更新
+      errors:
+        invalid_delta: { kind: invalid, message: 增减量不能为 0, field: delta }
+        insufficient_stock: { kind: conflict, message: 库存不足：调整后不能小于 0, field: delta }
+        stock_too_large: { kind: conflict, message: 调整后库存不能超过 10 亿, field: delta }

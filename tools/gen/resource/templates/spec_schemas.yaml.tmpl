@@ -1,0 +1,117 @@
+{{- define "props"}}
+{{- range .}}
+        {{.F.Name}}:
+          title: {{yq .F.Title}}
+{{- range .F.SpecSchema}}
+          {{.}}
+{{- end}}
+{{- if .F.Help}}
+          description: {{yq .F.Help}}
+{{- end}}
+{{- if .Validate}}
+          x-oapi-codegen-extra-tags:
+            validate: {{yq .Validate}}
+{{- end}}
+{{- end}}
+{{- end}}
+{{- range .Enums}}
+
+    {{.EnumType}}:
+      type: string
+      enum: [{{range $i, $v := .Values}}{{if $i}}, {{end}}{{$v.Value}}{{end}}]
+      x-enum-labels:
+{{- range .Values}}
+        {{.Value}}: {{yq .Label}}
+{{- end}}
+      description: {{yq (printf "%s的%s" $.D.Title .Title)}}
+{{- end}}
+
+    {{.N.Type}}:
+      type: object
+      required: [{{.ResponseRequired}}]
+      properties:
+        id:
+          title: ID
+          type: string
+          format: uuid
+          x-go-type: string
+{{- template "props" .ResponseProps}}
+{{- if .HasUpdate}}
+        version:
+          title: 版本号
+          type: integer
+          format: int64
+          description: 修改时原样带回；动作不改变它
+{{- end}}
+        created_at:
+          title: 创建时间
+          type: string
+          format: date-time
+        updated_at:
+          title: 更新时间
+          type: string
+          format: date-time
+{{- if .Admin}}
+
+    {{.N.Type}}Page:
+      allOf:
+        - $ref: "#/components/schemas/PageTotal"
+        - type: object
+          required: [items]
+          properties:
+            items:
+              title: {{yq .D.Title}}
+              type: array
+              items:
+                $ref: "#/components/schemas/{{.N.Type}}"
+{{- else if .WebList}}
+
+    {{.N.Type}}List:
+      type: object
+      required: [items]
+      properties:
+        items:
+          title: {{yq .D.Title}}
+          type: array
+          items:
+            $ref: "#/components/schemas/{{.N.Type}}"
+        next_cursor:
+          title: 下一页
+          type: string
+{{- end}}
+{{- if .HasCreate}}
+
+    Create{{.N.Type}}Request:
+      type: object
+{{- with .CreateRequired}}
+      required: [{{.}}]
+{{- end}}
+      properties:
+{{- template "props" .CreateProps}}
+{{- end}}
+{{- if .HasUpdate}}
+
+    Update{{.N.Type}}Request:
+      type: object
+      required: [{{.UpdateRequired}}]
+      properties:
+{{- template "props" .UpdateProps}}
+        version:
+          title: 版本号
+          type: integer
+          format: int64
+          description: 打开编辑表单时读到的 version；已经不是最新时返回 409 {{.N.Resource}}_conflict
+          minimum: 1
+          x-oapi-codegen-extra-tags:
+            validate: "required,gt=0"
+{{- end}}
+{{- range .Actions}}{{if .Input}}
+
+    {{pascal .Name}}{{$.N.Type}}Request:
+      type: object
+{{- with $.InputRequired .}}
+      required: [{{.}}]
+{{- end}}
+      properties:
+{{- template "props" ($.InputProps .)}}
+{{- end}}{{end}}
