@@ -267,6 +267,8 @@ func upgradeBase(root, target string) (string, error) {
 	return gitOutput(root, "merge-base", "HEAD", target)
 }
 
+// starterFileDrift 列出项目相对基线改过、且和目标版本也不一样的 starter 文件：合并时它们会被 starter 版本覆盖，
+// 项目的改动会丢。内容已经和目标版本相同的（例如提前同步了上游的修复）合并不会丢任何东西，不算漂移。
 func starterFileDrift(options upgradeOptions, base string) ([]string, error) {
 	removed, err := removedModules(options.projectRoot)
 	if err != nil {
@@ -282,7 +284,14 @@ func starterFileDrift(options upgradeOptions, base string) ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		if changed != "" {
+		if changed == "" {
+			continue
+		}
+		differsFromTarget, err := gitOutput(options.projectRoot, "diff", "--name-only", options.version, "--", path)
+		if err != nil {
+			return nil, err
+		}
+		if differsFromTarget != "" {
 			out = append(out, changed)
 		}
 	}

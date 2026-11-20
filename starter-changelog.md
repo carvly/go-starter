@@ -28,6 +28,7 @@ starter 自身的发版说明，升级工具从目标版本读取这份文件的
 - 网关信任 header 模式下，依赖会话的操作（† 操作、绑定、重新验证）返回 403 `session_unavailable`，不再返回
   `recent_auth_required`。
 - `return_to` 校验更严：整串不能有反斜杠和控制字符，解析后不能有 scheme 和 host。
+- 漂移检查只报"相对基线改过、且和目标版本也不一样"的 starter 文件，提前同步过上游修复的文件不再误报。
 - 升级基线只取同时是 HEAD 和目标版本祖先的 tag（项目自己的 tag 不会被当成基线）；基线不是版本号时显示目标版本
   及以前的全部升级说明。
 - 删除 `scripts/starter-paths.sh` 和 `tools/starter` 的 `paths`、`own` 子命令；`gen fixture` 存档名改为
