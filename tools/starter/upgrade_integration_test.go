@@ -255,16 +255,7 @@ func TestUpgradeTwiceInSequence(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, version := range []string{"v0.2.0", "v0.3.0"} {
-		f, err := os.OpenFile(filepath.Join(root, "docs/STARTER.md"), os.O_APPEND|os.O_WRONLY, 0o644)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := f.WriteString("\n" + version + "\n"); err != nil {
-			t.Fatal(err)
-		}
-		if err := f.Close(); err != nil {
-			t.Fatal(err)
-		}
+		appendFile(t, filepath.Join(root, "docs/STARTER.md"), "\n"+version+"\n")
 		commitUpgradeFixture(t, root, "release "+version, version)
 
 		out, err := runUpgradeMake(project, version)
@@ -290,5 +281,204 @@ func TestUpgradeTwiceInSequence(t *testing.T) {
 	}
 	if state.Base != "v0.2.0" {
 		t.Fatalf("第二次升级的基线应是 v0.2.0，实际 state = %+v", state)
+	}
+}
+
+// upgradeUntilComplete 反复以 CONTINUE=1 执行，直到完成；每次都应以 0 退出（停下等待也是 0）。
+func upgradeUntilComplete(t *testing.T, project, version string) string {
+	t.Helper()
+	statePath, err := gitPath(project, "starter-upgrade/state.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var all strings.Builder
+	for range 6 {
+		out, err := runUpgradeMake(project, version)
+		all.WriteString(out)
+		if err != nil {
+			t.Fatalf("upgrade %s: %v\n%s", version, err, all.String())
+		}
+		state, err := loadUpgradeState(statePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if state.Stage == "complete" {
+			return all.String()
+		}
+	}
+	t.Fatalf("upgrade %s did not complete:\n%s", version, all.String())
+	return ""
+}
+
+func gitIn(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+// 项目改过、合并时没有冲突的 starter 文件，升级后也要恢复为目标版本，和有冲突的文件一致。
+func TestUpgradeRestoresCleanlyMergedStarterFiles(t *testing.T) {
+	root, project := setupUpgradeRepos(t)
+	setupUpgradePostgres(t)
+	const file = "docs/STARTER.md"
+	path := filepath.Join(project, file)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(strings.Replace(string(data), "# 使用 go-starter", "# 使用 go-starter（项目改过）", 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	commitUpgradeFixture(t, project, "patch starter doc", "")
+	appendFile(t, filepath.Join(root, file), "\n目标版本追加\n")
+	commitUpgradeFixture(t, root, "release v0.2.0", "v0.2.0")
+
+	out := upgradeUntilComplete(t, project, "v0.2.0")
+	if differs, err := gitOutput(project, "diff", "--name-only", "v0.2.0", "--", file); err != nil {
+		t.Fatal(err)
+	} else if differs != "" {
+		t.Fatalf("%s 应等于目标版本\n%s", file, out)
+	}
+	if !strings.Contains(out, "starter-upgrade-status: stopped point=drift") {
+		t.Fatalf("应在漂移处停下：\n%s", out)
+	}
+}
+
+// 业务代码引用了目标版本删除的包时，升级停在"合并后迁移前"等待修改，而不是在 go mod tidy 处失败。
+func TestUpgradeStopsForCodeFixBeforeBuild(t *testing.T) {
+	root, project := setupUpgradeRepos(t)
+	setupUpgradePostgres(t)
+	legacy := filepath.Join(root, "internal/kit/legacyx/legacyx.go")
+	if err := os.MkdirAll(filepath.Dir(legacy), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacy, []byte("package legacyx\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	commitUpgradeFixture(t, root, "add legacyx", "v0.2.0")
+	gitIn(t, project, "fetch", "-q", "starter", "--tags")
+	gitIn(t, project, "merge", "-q", "--ff-only", "v0.2.0")
+	user := filepath.Join(project, "internal/projectx/x.go")
+	if err := os.MkdirAll(filepath.Dir(user), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(user, []byte("package projectx\n\nimport _ \"app.local/internal/kit/legacyx\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	commitUpgradeFixture(t, project, "use legacyx", "")
+
+	if err := os.RemoveAll(filepath.Dir(legacy)); err != nil {
+		t.Fatal(err)
+	}
+	appendFile(t, filepath.Join(root, "starter-changelog.md"), "\n## v0.3.0 — 2026-11-21\n\n### 升级说明\n\n#### 合并后迁移前\n\n- 夹具：legacyx 已删除，改掉引用\n")
+	commitUpgradeFixture(t, root, "remove legacyx", "v0.3.0")
+
+	out, err := runUpgradeMake(project, "v0.3.0")
+	if err != nil {
+		t.Fatalf("应停下等待修改而不是失败：%v\n%s", err, out)
+	}
+	statePath, err := gitPath(project, "starter-upgrade/state.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := loadUpgradeState(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Pending != pointBeforeMigrate {
+		t.Fatalf("应停在 %q，实际 state = %+v\n%s", pointBeforeMigrate, state, out)
+	}
+	for _, want := range []string{"夹具：legacyx 已删除，改掉引用", "starter-upgrade-status: stopped point=合并后迁移前"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("输出缺少 %q：\n%s", want, out)
+		}
+	}
+	gitIn(t, project, "rm", "-rq", "internal/projectx")
+	out = upgradeUntilComplete(t, project, "v0.3.0")
+	for _, want := range []string{"git diff --cached", "starter-upgrade-status: complete target=v0.3.0"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("输出缺少 %q：\n%s", want, out)
+		}
+	}
+}
+
+func appendFile(t *testing.T, path, text string) {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(text); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// 共享 spec 里的 starter 操作被项目改过时，漂移提示要说明 spec 保留合并结果，不能说会恢复为目标版本。
+func TestUpgradeDriftMessageKeepsSpecMergeResult(t *testing.T) {
+	root, project := setupUpgradeRepos(t)
+	setupUpgradePostgres(t)
+	spec := filepath.Join(project, "api/openapi.yaml")
+	data, err := os.ReadFile(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := strings.Replace(string(data), "summary: 原生 SDK 登录", "summary: 项目改过的原生 SDK 登录", 1)
+	if err := os.WriteFile(spec, []byte(updated), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	commitUpgradeFixture(t, project, "patch starter operation", "")
+	appendFile(t, filepath.Join(root, "docs/STARTER.md"), "\n目标版本追加\n")
+	commitUpgradeFixture(t, root, "release v0.2.0", "v0.2.0")
+
+	out := upgradeUntilComplete(t, project, "v0.2.0")
+	for _, want := range []string{"spec 保留三方合并结果，不会恢复为目标版本", "starter operation changed"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("输出缺少 %q：\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "项目改过以下 starter 文件") {
+		t.Fatalf("没有改过 starter 文件，不应提示文件恢复：\n%s", out)
+	}
+	data, err = os.ReadFile(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "项目改过的原生 SDK 登录") {
+		t.Fatal("spec 应保留三方合并结果")
+	}
+}
+
+// 会重新生成的文件（派生代码、go.sum）冲突时不拦住升级：派生文件重新生成，go.sum 由 tidy 收口。
+func TestUpgradeResolvesRegeneratedConflicts(t *testing.T) {
+	root, project := setupUpgradeRepos(t)
+	setupUpgradePostgres(t)
+	const gen = "internal/modules/user/httpapi/oapi/api.gen.go"
+	for _, side := range []struct{ dir, name string }{{project, "project"}, {root, "target"}} {
+		appendFile(t, filepath.Join(side.dir, gen), "\n// "+side.name+" edit\n")
+		appendFile(t, filepath.Join(side.dir, "go.sum"), "example.com/"+side.name+" v1.0.0/go.mod h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\n")
+	}
+	commitUpgradeFixture(t, project, "touch derived files", "")
+	commitUpgradeFixture(t, root, "release v0.2.0", "v0.2.0")
+
+	out := upgradeUntilComplete(t, project, "v0.2.0")
+	if strings.Contains(out, "point=conflict") {
+		t.Fatalf("派生文件和 go.sum 的冲突应自动处理：\n%s", out)
+	}
+	for _, file := range []string{gen, "go.sum"} {
+		data, err := os.ReadFile(filepath.Join(project, file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, bad := range []string{"<<<<<<<", "project edit", "target edit", "example.com/project", "example.com/target"} {
+			if strings.Contains(string(data), bad) {
+				t.Fatalf("%s 应已重新生成，仍含 %q", file, bad)
+			}
+		}
 	}
 }

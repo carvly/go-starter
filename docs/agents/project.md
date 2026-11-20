@@ -42,5 +42,6 @@ starter 所有的文件由两处推出，不再另列：`starter-owned.txt` 的�
 
 按“配置 → 扩展点 → 业务模块 → 向 starter 提改动 → 临时本地补丁”的顺序处理。
 业务项目默认不改 `starter-owned.txt` 中的文件。临时补丁必须同时向 starter 提改动，并在
-`project/starter-patches.md` 记录文件、原因和上游 PR/issue；升级预检会列出这些漂移。
+`project/starter-patches.md` 记录文件、原因和上游 PR/issue；升级预检会列出这些漂移，合并后它们恢复为
+starter 版本，仍需要的补丁在升级完成后重新应用。
 只需某个修复时优先 `git cherry-pick`，后续正常升级会自然合并它。

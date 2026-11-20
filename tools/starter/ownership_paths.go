@@ -1,6 +1,7 @@
 package main
 
 import (
+	"path"
 	"slices"
 	"strings"
 
@@ -68,6 +69,13 @@ func hasAnyPrefix(file string, prefixes []string) bool {
 
 // derivedOrLock 是从来源重新生成的文件、锁文件，以及项目自己的 CI 工作流（.github/workflows/project-*）。
 func derivedOrLock(file string) bool {
-	return strings.Contains(file, ".gen.") || strings.HasSuffix(file, "schema.d.ts") || strings.HasSuffix(file, "go.sum") ||
-		strings.HasSuffix(file, "pnpm-lock.yaml") || strings.HasPrefix(file, ".github/workflows/project-")
+	return regenerated(file) || goSum(file) || path.Base(file) == "pnpm-lock.yaml" ||
+		strings.HasPrefix(file, ".github/workflows/project-")
+}
+
+func goSum(file string) bool { return path.Base(file) == "go.sum" }
+
+// regenerated 是升级流程会从来源重新生成的派生文件。
+func regenerated(file string) bool {
+	return strings.Contains(file, ".gen.") || strings.HasSuffix(file, "schema.d.ts")
 }

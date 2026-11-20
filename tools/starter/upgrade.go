@@ -21,13 +21,19 @@ type upgradeState struct {
 	Confirmed []string `json:"confirmed,omitempty"`
 }
 
-// 人工确认点。前三个对应 starter-changelog.md 升级说明里的同名小节，drift 是检测到项目改过 starter 文件。
+// 停点。前三个对应 starter-changelog.md 升级说明里的同名小节，drift 是检测到项目改过 starter 文件，这四个要
+// CONTINUE=1 确认；conflict 是合并留下了需要人工解决的冲突，是否解决看 git 状态，不需要确认。
 const (
 	pointPrecheck      = "合并前"
 	pointDrift         = "drift"
+	pointConflict      = "conflict"
 	pointBeforeMigrate = "合并后迁移前"
 	pointAfterMigrate  = "迁移后"
 )
+
+// statusPrefix 开头的一行是给脚本和 Agent 读的结果：停下等待处理或已完成都以 0 退出（make 会把非 0 退出码
+// 统一改成 2，传不出区别），故障以非 0 退出且不打印这一行。
+const statusPrefix = "starter-upgrade-status:"
 
 type upgradeOptions struct {
 	version     string
@@ -99,15 +105,23 @@ func upgrade(options upgradeOptions) error {
 		return err
 	}
 	notes := upgradeNotes(string(changelog), state.Base, state.Target)
-	// stop 在需要人工确认且还没确认时记下停点并返回 true。
+	// pause 停下：打印原因、该小节的升级说明、续跑方法和状态行。
+	pause := func(point, message string) error {
+		fmt.Println(message)
+		if n := notes[point]; n != "" {
+			fmt.Printf("升级说明 · %s：\n%s\n", point, n)
+		}
+		fmt.Printf("完成后执行 make starter-upgrade VERSION=%s CONTINUE=1 续跑。\n", state.Target)
+		fmt.Printf("%s stopped point=%s\n", statusPrefix, point)
+		return saveUpgradeState(statePath, state)
+	}
+	// stop 在需要人工确认且还没确认时记下停点并停下，返回 true。
 	stop := func(point string, needed bool, message string) (bool, error) {
 		if !needed || slices.Contains(state.Confirmed, point) {
 			return false, nil
 		}
 		state.Pending = point
-		fmt.Println(message)
-		fmt.Println("完成后用 CONTINUE=1 续跑，只确认这一处。")
-		return true, saveUpgradeState(statePath, state)
+		return true, pause(point, message)
 	}
 	for {
 		fmt.Printf("升级基线：%s；目标：%s\n", state.Base, state.Target)
@@ -119,7 +133,7 @@ func upgrade(options upgradeOptions) error {
 			}
 			state.Stage = "drift"
 		case "drift":
-			drift, err := starterFileDrift(options, state.Base)
+			fileDrift, err := starterFileDrift(options, state.Base)
 			if err != nil {
 				return err
 			}
@@ -127,8 +141,7 @@ func upgrade(options upgradeOptions) error {
 			if err != nil {
 				return err
 			}
-			drift = append(drift, specDrift...)
-			if stopped, err := stop(pointDrift, len(drift) > 0, "项目改过以下 starter 文件，合并时会以 starter 版本为准，请确认已登记在 project/starter-patches.md：\n"+strings.Join(drift, "\n")); stopped || err != nil {
+			if stopped, err := stop(pointDrift, len(fileDrift)+len(specDrift) > 0, driftMessage(fileDrift, specDrift)); stopped || err != nil {
 				return err
 			}
 			state.Stage = "merge"
@@ -138,31 +151,34 @@ func upgrade(options upgradeOptions) error {
 					return err
 				}
 			}
+			// starter 所有的文件一律取目标版本，不论合并时是否冲突：项目对它们的改动是否保留不能取决于碰巧冲突与否。
+			// 已删除模块的文件也先取回，由 replay 按目标版本重新删除。
 			paths, err := starterOwnedPaths(options.targetRoot, options.version, nil)
 			if err != nil {
 				return err
 			}
-			for _, path := range paths {
-				conflicted, err := gitOutput(options.projectRoot, "diff", "--name-only", "--diff-filter=U", "--", path)
-				if err != nil {
+			if len(paths) > 0 {
+				if err := run(options.projectRoot, append([]string{"git", "checkout", options.version, "--"}, paths...)...); err != nil {
 					return err
 				}
-				if conflicted != "" {
-					if err := run(options.projectRoot, "git", "checkout", options.version, "--", path); err != nil {
-						return err
-					}
-					if err := run(options.projectRoot, "git", "add", "--", path); err != nil {
-						return err
-					}
+				if err := run(options.projectRoot, append([]string{"git", "add", "--"}, paths...)...); err != nil {
+					return err
 				}
+			}
+			if err := resolveRegeneratedConflicts(options.projectRoot, options.version); err != nil {
+				return err
 			}
 			remaining, err := gitOutput(options.projectRoot, "diff", "--name-only", "--diff-filter=U")
 			if err != nil {
 				return err
 			}
 			if remaining != "" {
-				fmt.Printf("请解决并暂存以下共享/项目文件冲突，然后用 CONTINUE=1 续跑：\n%s\n", remaining)
-				return saveUpgradeState(statePath, state)
+				message := "请解决并暂存以下共享/项目文件冲突：\n" + remaining
+				if strings.Contains(remaining, "pnpm-lock.yaml") {
+					message += "\npnpm-lock.yaml 不能按行合并：先解决 package.json，再以项目一侧为起点（git checkout --ours），" +
+						"在 web/admin 执行 pnpm install 重新解析后暂存。"
+				}
+				return pause(pointConflict, message)
 			}
 			state.Stage = "replay"
 		case "replay":
@@ -186,10 +202,9 @@ func upgrade(options upgradeOptions) error {
 					return err
 				}
 			}
-			for _, command := range [][]string{{"go", "mod", "tidy"}, {"go", "generate", "./..."}} {
-				if err := run(options.projectRoot, command...); err != nil {
-					return err
-				}
+			// 先生成不先 tidy：业务代码可能还引用目标版本已改名的包，tidy 会失败，要等"合并后迁移前"改完。
+			if err := run(options.projectRoot, "go", "generate", "./..."); err != nil {
+				return err
 			}
 			if exists(filepath.Join(options.projectRoot, "web/admin/package.json")) {
 				if !exists(filepath.Join(options.projectRoot, "web/admin/node_modules")) {
@@ -203,11 +218,19 @@ func upgrade(options upgradeOptions) error {
 					}
 				}
 			}
-			state.Stage = "migrate"
-		case "migrate":
-			if stopped, err := stop(pointBeforeMigrate, notes[pointBeforeMigrate] != "", "请先完成升级说明里的“合并后迁移前”事项，再执行迁移。"); stopped || err != nil {
+			state.Stage = "build"
+		case "build":
+			if stopped, err := stop(pointBeforeMigrate, notes[pointBeforeMigrate] != "",
+				"代码已合并并重新生成。请完成升级说明里的“合并后迁移前”事项，改到 go build ./... 通过。"); stopped || err != nil {
 				return err
 			}
+			for _, command := range [][]string{{"go", "mod", "tidy"}, {"go", "build", "./..."}} {
+				if err := run(options.projectRoot, command...); err != nil {
+					return err
+				}
+			}
+			state.Stage = "migrate"
+		case "migrate":
 			if err := run(options.projectRoot, "go", "run", "./cmd/api", "migrate", "up"); err != nil {
 				return err
 			}
@@ -230,10 +253,13 @@ func upgrade(options upgradeOptions) error {
 			}
 			state.Stage = "complete"
 		case "complete":
+			fmt.Printf("升级流程完成：%s。工具不提交，下一步：\n", state.Target)
+			fmt.Println("1. 用 git status、git diff --cached 复核结果，提交（合并未提交时一并提交 merge）；")
+			fmt.Println("2. project/starter-patches.md 里仍需要的补丁重新应用到对应 starter 文件；")
 			if n := notes["部署后"]; n != "" {
-				fmt.Println("部署后事项：\n" + n)
+				fmt.Println("3. 所有实例升级后执行部署后事项：\n" + n)
 			}
-			fmt.Printf("升级流程完成：%s。\n", state.Target)
+			fmt.Printf("%s complete target=%s\n", statusPrefix, state.Target)
 			return saveUpgradeState(statePath, state)
 		default:
 			return fmt.Errorf("upgrade: unknown stage %s", state.Stage)
@@ -242,6 +268,58 @@ func upgrade(options upgradeOptions) error {
 			return err
 		}
 	}
+}
+
+// driftMessage 区分两类漂移：starter 文件合并后恢复为目标版本；spec 是共享文件，保留三方合并结果，工具不恢复。
+func driftMessage(files, spec []string) string {
+	var parts []string
+	if len(files) > 0 {
+		parts = append(parts, "项目改过以下 starter 文件，合并后恢复为目标版本；仍需要的改动先登记在 project/starter-patches.md，"+
+			"升级完成后重新应用：\n"+strings.Join(files, "\n"))
+	}
+	if len(spec) > 0 {
+		parts = append(parts, "项目改过共享 spec 里以下 starter 操作或 schema。spec 保留三方合并结果，不会恢复为目标版本；"+
+			"合并后与目标版本对齐，仍需要的改动登记在 project/starter-patches.md：\n"+strings.Join(spec, "\n"))
+	}
+	return strings.Join(parts, "\n")
+}
+
+// resolveRegeneratedConflicts 解决之后会重新生成的文件的冲突，不让它们拦住升级：派生文件取目标版本，由 replay
+// 重新生成；go.sum 取两边的并集，由 build 阶段的 go mod tidy 收口。
+func resolveRegeneratedConflicts(root, version string) error {
+	conflicted, err := gitOutput(root, "diff", "--name-only", "--diff-filter=U")
+	if err != nil || conflicted == "" {
+		return err
+	}
+	for _, file := range strings.Split(conflicted, "\n") {
+		switch {
+		case regenerated(file):
+			if exec.Command("git", "-C", root, "cat-file", "-e", version+":"+file).Run() == nil {
+				if err := run(root, "git", "checkout", version, "--", file); err != nil {
+					return err
+				}
+				if err := run(root, "git", "add", "--", file); err != nil {
+					return err
+				}
+			} else if err := run(root, "git", "rm", "-q", "--", file); err != nil {
+				return err
+			}
+		case goSum(file):
+			ours, errOurs := gitOutput(root, "show", ":2:"+file)
+			theirs, errTheirs := gitOutput(root, "show", ":3:"+file)
+			if errOurs != nil || errTheirs != nil {
+				continue
+			}
+			lines := slices.Compact(slices.Sorted(slices.Values(slices.Concat(strings.Split(ours, "\n"), strings.Split(theirs, "\n")))))
+			if err := os.WriteFile(filepath.Join(root, file), []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+				return err
+			}
+			if err := run(root, "git", "add", "--", file); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // mergeTarget 合并目标版本；有冲突时 git merge 失败但 MERGE_HEAD 存在，交给后续步骤处理。
