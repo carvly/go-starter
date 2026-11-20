@@ -25,7 +25,7 @@ tags:
     description: 员工账号、会话、角色权限、操作日志（internal/modules/staff）
   - name: users
     summary: "用户"
-    description: "前台用户。账号由登录创建，后台只能查看、停用和启用（internal/modules/auth）"
+    description: "前台用户。账号由登录创建，后台只能查看、停用和启用（internal/modules/user）"
 
 security:
   - staffSession: []

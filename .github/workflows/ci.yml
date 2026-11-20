@@ -44,6 +44,10 @@ jobs:
         # CI 单纯因为上游发新版就变红/变绿，与本仓库改动无关。
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.10.0 ./...
 
+      - name: actionlint
+        # 版本以 Makefile 的 ACTIONLINT 为准；runner 自带 shellcheck，会一并检查 run 里的脚本。
+        run: make actionlint
+
       - name: go mod verify
         run: go mod verify
 
@@ -143,8 +147,8 @@ jobs:
           target: ${{ matrix.target }}
           push: false
 
-  # 端到端：起完整栈（api+worker+postgres），在后台建商品、前台下单，确认 worker 真的消费了
-  # order_created 事件、订单状态从 pending 变成 confirmed。
+  # 端到端：起完整栈（api+worker+postgres），跑 starter 通用冒烟（后台员工、角色、操作日志，
+  # worker 启动时执行 user 清理任务），再跑项目自己的 project/ci/smoke.sh。
   compose-integration:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -194,15 +198,16 @@ jobs:
             removed=$(sed -nE 's/^removed_modules:[[:space:]]*\[([^]]*)\].*/\1/p' starter-removed.yaml | tr -d ' ')
           fi
           case ",$removed," in *,staff,*) echo "STAFF_ENABLED=false" >> "$GITHUB_ENV" ;; *) echo "STAFF_ENABLED=true" >> "$GITHUB_ENV" ;; esac
-          case ",$removed," in *,auth,*) echo "AUTH_ENABLED=false" >> "$GITHUB_ENV" ;; *) echo "AUTH_ENABLED=true" >> "$GITHUB_ENV" ;; esac
+          case ",$removed," in *,user,*) echo "USER_ENABLED=false" >> "$GITHUB_ENV" ;; *) echo "USER_ENABLED=true" >> "$GITHUB_ENV" ;; esac
 
       - name: starter 通用冒烟——后台员工、角色和操作日志
         if: env.STAFF_ENABLED == 'true'
         run: scripts/ci-staff-smoke.sh
 
-      - name: starter 通用冒烟——auth_cleanup 启动时执行
-        if: env.AUTH_ENABLED == 'true'
-        run: docker compose -f deploy/docker-compose.yml logs worker | grep 'auth: purged expired rows'
+      - name: starter 通用冒烟——user_cleanup 启动时执行
+        if: env.USER_ENABLED == 'true'
+        run: |
+          docker compose -f deploy/docker-compose.yml logs worker | grep 'user: purged expired rows'
 
       - name: 项目业务冒烟（存在 project/ci/smoke.sh 时）
         run: |

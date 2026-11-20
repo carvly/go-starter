@@ -1,9 +1,12 @@
 # 项目补充规则
 
-本文件归业务项目所有，记录当前项目特有的模块和规则；starter 通用规则见 `AGENTS.md`。
+本文件归业务项目所有，记录当前项目特有的规则；starter 通用规则见 `AGENTS.md`，模块清单与链路见
+`docs/PROJECT.md`。
 
-## 当前模块
+## 项目规则
 
-- `auth`：前台用户、登录、会话、注销和前台鉴权中间件。
-- `staff`：后台员工、角色权限、操作日志和后台鉴权。
-- 项目特有的 CI 环境变量放在 `project/ci/env`；需要业务冒烟时新增 `project/ci/smoke.sh`。
+（暂无。业务项目的硬规则写在这里。）
+
+## CI
+
+项目特有的 CI 环境变量放在 `project/ci/env`；需要业务冒烟时新增 `project/ci/smoke.sh`。
