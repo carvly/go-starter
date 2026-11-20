@@ -148,8 +148,8 @@ postgres 18 起官方镜像的 `PGDATA` 是 `/var/lib/postgresql/<大版本>/doc
 | job | 内容 |
 |---|---|
 | test | vet、golangci-lint（两者都带 `integration`、`genfixture` tag，见 `.golangci.yml` 的 `run.build-tags`）、`shellcheck -x scripts/*.sh`、govulncheck、`make actionlint`（workflow 文件）、`go mod verify`、生成代码一致性（`go generate ./...` 后，各模块 `httpapi/oapi`、`adminapi/oapi` 的 `api.gen.go` 和 `web/admin/src/api/meta.gen.ts` 不能有改动）、tidy 一致性、`go test ./...`（含架构测试）、`scripts/check-docs.sh`、`scripts/check-versions.sh`、构建 |
-| integration | `go test -tags=integration ./...`，testcontainers 起真实 Postgres |
-| gitleaks | 密钥泄露扫描 |
+| integration | `go test -tags=integration ./...`，testcontainers 起真实 Postgres；先装后台前端依赖（升级工具和删除执行器的集成测试要重新生成前端） |
+| gitleaks | 密钥泄露扫描：`make gitleaks`（开源 CLI，版本固定在 Makefile；不用 gitleaks-action，它对组织账号要求付费许可证） |
 | openapi-lint | redocly 校验 spec |
 | docker-build | api / worker 镜像能构建 |
 | compose-integration | 起完整栈，等 api `/readyz` 与 worker 健康；按 `starter-removed.yaml` 跑 starter 通用冒烟（`scripts/ci-staff-smoke.sh`：CLI 建管理员、登录、改密、员工与角色、操作日志；worker 启动时执行 user 清理任务），再跑项目的 `project/ci/smoke.sh`（存在时） |

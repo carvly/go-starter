@@ -99,24 +99,34 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: "1.27"
+      # 升级工具和删除执行器的集成测试会重新生成后台前端（pnpm gen:api / gen:routes / typecheck），
+      # CI 里没装依赖时它们直接失败，不会悄悄跳过。
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: web/admin/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: web/admin/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: web/admin
       - run: go test -tags=integration ./...
 
   # 密钥泄露扫描，独立 job 并行跑。
+  # 用开源的 gitleaks CLI（版本以 Makefile 的 GITLEAKS 为准），不用 gitleaks-action：后者对组织账号要求付费许可证。
   gitleaks:
     runs-on: ubuntu-latest
-    # gitleaks-action 在 PR 上要经 API 读取这个 PR 的提交列表。
-    permissions:
-      contents: read
-      pull-requests: read
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v3
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.27"
+      - run: make gitleaks
 
   # 只校验 YAML 本身是合法的 OpenAPI 3.2；与实现一致由生成代码一致性检查和
   # internal/app 的路由/spec 双向比对测试保证。

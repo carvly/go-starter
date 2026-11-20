@@ -22,7 +22,7 @@ func ValidUser() *domain.User {
 		DisplayName:  Text(n*100+0, 8),
 		AvatarUrl:    Text(n*100+1, 8),
 		Status:       domain.UserStatusDeleted,
-		LastLoginAt:  time.Now(),
+		LastLoginAt:  time.Now().Truncate(time.Microsecond), // Postgres 存微秒，读回来要相等
 		SignupClient: "web",
 	}
 }
@@ -44,7 +44,7 @@ func Int(n, lo, hi int64) int64 {
 // ValidIdentity 返回一个满足全部约束的登录方式，唯一字段每次调用都不同。
 func ValidIdentity() *domain.Identity {
 	n := seq.Add(1)
-	now := time.Now()
+	now := time.Now().Truncate(time.Microsecond)
 	return &domain.Identity{
 		ID:          uuid.NewV7().String(),
 		UserID:      uuid.NewV7().String(),
@@ -58,7 +58,7 @@ func ValidIdentity() *domain.Identity {
 // ValidSession 返回一个满足全部约束的会话，唯一字段每次调用都不同。
 func ValidSession() *domain.Session {
 	n := seq.Add(1)
-	now := time.Now()
+	now := time.Now().Truncate(time.Microsecond)
 	idn := uuid.NewV7().String()
 	return &domain.Session{
 		ID:               uuid.NewV7().String(),

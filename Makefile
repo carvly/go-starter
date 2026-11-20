@@ -1,6 +1,6 @@
 .PHONY: setup run-api run-worker build test test-integration vet fmt lint lint-new tidy verify \
 	migrate-up migrate-down govulncheck generate check-docs check-versions check-modules remove-modules ci \
-	outdated upgrade doc-impact starter-upgrade actionlint
+	outdated upgrade doc-impact starter-upgrade actionlint gitleaks
 
 # tidy 会原地改写 go.mod/go.sum，与同一次 make 里读它们的 target 并发会读到
 # 半截文件，所以禁止并行。
@@ -13,6 +13,7 @@ GOLANGCI_LINT_VERSION := v2.15.0
 GOLANGCI_LINT := go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 GOVULNCHECK := go run golang.org/x/vuln/cmd/govulncheck@v1.10.0
 ACTIONLINT := go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+GITLEAKS := go run github.com/zricethezav/gitleaks/v8@v8.30.1
 
 # 安装提交钩子。lefthook 版本由 go.mod 的 tool 指令固定。
 setup:
@@ -59,6 +60,10 @@ verify:
 
 govulncheck:
 	$(GOVULNCHECK) ./...
+
+# 扫描整个 git 历史里的密钥泄露（只输出脱敏后的位置）。
+gitleaks:
+	$(GITLEAKS) git --redact --no-banner .
 
 # 检查 .github/workflows/*.yml：YAML 语法、表达式、run 里的脚本（装了 shellcheck 时）。
 actionlint:
