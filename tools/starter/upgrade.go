@@ -66,7 +66,10 @@ func upgrade(options upgradeOptions) error {
 		return err
 	}
 	if state.Target != "" && state.Target != options.version {
-		return fmt.Errorf("upgrade: unfinished target %s", state.Target)
+		if state.Stage != "complete" {
+			return fmt.Errorf("upgrade: unfinished target %s", state.Target)
+		}
+		state = upgradeState{}
 	}
 	if state.Stage == "" {
 		if out, err := gitOutput(options.projectRoot, "status", "--porcelain"); err != nil {

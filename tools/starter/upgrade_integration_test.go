@@ -245,3 +245,50 @@ func TestUpgradeSharedConflictContinues(t *testing.T) {
 		t.Fatalf("stage = %s", state.Stage)
 	}
 }
+
+// 一次升级完成并提交后，下一次升级到更新的版本要能直接开始，基线是上一次的目标。
+func TestUpgradeTwiceInSequence(t *testing.T) {
+	root, project := setupUpgradeRepos(t)
+	setupUpgradePostgres(t)
+	statePath, err := gitPath(project, "starter-upgrade/state.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, version := range []string{"v0.2.0", "v0.3.0"} {
+		f, err := os.OpenFile(filepath.Join(root, "docs/STARTER.md"), os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.WriteString("\n" + version + "\n"); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
+		commitUpgradeFixture(t, root, "release "+version, version)
+
+		out, err := runUpgradeMake(project, version)
+		if err != nil {
+			t.Fatalf("upgrade %s: %v\n%s", version, err, out)
+		}
+		state, err := loadUpgradeState(statePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if state.Stage != "complete" || state.Target != version {
+			t.Fatalf("upgrade %s: state = %+v\n%s", version, state, out)
+		}
+		if status, err := gitOutput(project, "status", "--porcelain"); err != nil {
+			t.Fatal(err)
+		} else if status != "" {
+			commitUpgradeFixture(t, project, "upgrade starter to "+version, "")
+		}
+	}
+	state, err := loadUpgradeState(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Base != "v0.2.0" {
+		t.Fatalf("第二次升级的基线应是 v0.2.0，实际 state = %+v", state)
+	}
+}

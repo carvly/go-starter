@@ -26,7 +26,8 @@ make starter-upgrade VERSION=v0.1.0 CONTINUE=1
 它会依次执行：打印升级说明、检查 starter 文件和 spec 漂移、merge、把 starter 文件的冲突
 解决为 starter 版本、重放已删除模块、重新生成、迁移和验证。裁剪、归属比较和重放都由同一个
 `tools/starter` 完成，不再分别维护 shell、Python 和其他 Go 工具。目标与基线首次运行后固定，
-续跑不能换目标；已有 `MERGE_HEAD` 时不会重复 merge。
+续跑不能换目标；已有 `MERGE_HEAD` 时不会重复 merge。升级完成（状态为 `complete`）后，工具不会自动提交，
+由开发者复核并提交 merge；之后用新的 `VERSION` 执行就是下一次升级，基线是刚完成的目标。
 
 人工确认点有四个：升级说明的"合并前""合并后迁移前""迁移后"，以及检测到项目改过 starter 文件（漂移）。漂移只算
 "相对基线改过、且和目标版本也不一样"的文件——合并会用 starter 版本覆盖它们；已经和目标版本内容相同的（例如提前同步了
@@ -56,7 +57,8 @@ make 入口。只想要某个修复时可以 `git cherry-pick`。
 ## 升级改动的验收矩阵
 
 修改升级工具、删除执行器或状态机时，必须用临时 Git 仓库和真实数据库保留以下持久测试：
-每个确认点只被它自己那一次 `CONTINUE=1` 确认（`TestUpgradeStopsAtEachConfirmationOnce`）；目标工具发生变化；starter 文件与 spec 漂移；merge 非冲突失败；共享 spec
+每个确认点只被它自己那一次 `CONTINUE=1` 确认（`TestUpgradeStopsAtEachConfirmationOnce`）；完成并提交后连续升级到
+下一个版本（`TestUpgradeTwiceInSequence`）；目标工具发生变化；starter 文件与 spec 漂移；merge 非冲突失败；共享 spec
 冲突解决后续跑；删除 user/staff 后重放；不同目标拒绝续跑；副本权限和可执行脚本正确。测试必须区分
 “发现漂移”和“工具故障”，不能只验证正常路径。
 
