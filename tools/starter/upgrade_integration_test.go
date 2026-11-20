@@ -38,6 +38,12 @@ func setupUpgradeRepos(t *testing.T) (string, string) {
 	if out, err := exec.Command("git", "-C", project, "remote", "rename", "origin", "starter").CombinedOutput(); err != nil {
 		t.Fatalf("rename remote: %v\n%s", err, out)
 	}
+	// 升级工具会 git merge，需要提交者身份；真实项目里开发者都有，CI runner 上没有全局配置。
+	for _, kv := range [][2]string{{"user.email", "test@example.com"}, {"user.name", "test"}} {
+		if out, err := exec.Command("git", "-C", project, "config", kv[0], kv[1]).CombinedOutput(); err != nil {
+			t.Fatalf("git config %s: %v\n%s", kv[0], err, out)
+		}
+	}
 	return root, project
 }
 
