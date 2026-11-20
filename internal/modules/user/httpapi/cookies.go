@@ -8,7 +8,7 @@ import (
 )
 
 // 浏览器授权流程的绑定 cookie 名是 oauth_b_<state 前 8 位>，同时进行的多个流程
-// 互不覆盖；refresh token cookie 只在 /v1/auth/session 下发送（见 docs/agents/auth.md 的"会话"）。
+// 互不覆盖；refresh token cookie 只在 /v1/auth/session 下发送（见 internal/modules/user/docs/user.md 的"会话"）。
 const (
 	bindingCookiePrefix = "oauth_b_"
 	refreshCookieName   = "refresh_token"

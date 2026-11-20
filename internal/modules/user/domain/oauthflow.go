@@ -36,7 +36,7 @@ type OAuthStartOptions struct {
 }
 
 // ValidReturnTo 报告 return_to 是否是合法的站内相对路径：以单个 / 开头，不含反斜杠和控制字符，解析后没有
-// scheme 和 host（见 docs/agents/auth.md）。浏览器解析 URL 时会去掉制表符、换行并把 \ 当成 /，所以
+// scheme 和 host（见 internal/modules/user/docs/user.md）。浏览器解析 URL 时会去掉制表符、换行并把 \ 当成 /，所以
 // "/\t/evil.com"、"/\\evil.com" 这类值都会变成 //evil.com，必须整串拒绝，不能只看前缀。
 func ValidReturnTo(returnTo string) bool {
 	if !strings.HasPrefix(returnTo, "/") || strings.HasPrefix(returnTo, "//") || strings.ContainsRune(returnTo, '\\') {
@@ -125,7 +125,7 @@ func (s *Service) TakeOAuthState(ctx context.Context, rawState string) (*OAuthSt
 }
 
 // NewExchangeCode 生成登录兑换码：state 前 8 位 + 新随机串，兑换时按前 8 位
-// 找到绑定 cookie（见 docs/agents/auth.md 的"必须保持的安全性质"）。
+// 找到绑定 cookie（见 internal/modules/user/docs/user.md 的"必须保持的安全性质（前台）"）。
 func NewExchangeCode(state string) string {
 	prefix := state
 	if len(prefix) > 8 {

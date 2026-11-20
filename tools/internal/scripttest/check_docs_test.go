@@ -74,3 +74,18 @@ func TestCheckDocs_AcceptsValidDoc(t *testing.T) {
 		t.Fatalf("合法文档被拒绝：%v\n%s", err, out)
 	}
 }
+
+// 业务项目删掉的模块（starter-removed.yaml）连同它的文档一起删除，通用文档里指向它的链接不算失效。
+func TestCheckDocs_SkipsLinksToRemovedModules(t *testing.T) {
+	files := map[string]string{
+		"starter-removed.yaml": "removed_modules: [user]\n",
+		"AGENTS.md":            "见 [user](internal/modules/user/docs/user.md)。\n",
+	}
+	if out, err := runCheckDocs(t, files); err != nil {
+		t.Fatalf("指向已删除模块的链接不应报错：%v\n%s", err, out)
+	}
+	files["starter-removed.yaml"] = "removed_modules: [staff]\n"
+	if out, err := runCheckDocs(t, files); err == nil || !strings.Contains(out, "链接的目标不存在") {
+		t.Fatalf("模块没删时缺失的链接仍要报出：%v\n%s", err, out)
+	}
+}

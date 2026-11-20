@@ -52,9 +52,9 @@
   自己的主机名：cookie 不按端口隔离，和前台同主机不同端口时，后台会话 cookie 也会被发到前台 server。
   后台端口上的 `/metrics`、`/docs`、`/admin.yaml` 不需要登录：反代给员工访问时只转发
   `/admin/v1` 和前端页面，生产环境用 `HTTP_API_DOCS_ENABLED=false` 关掉文档。首个超级管理员
-  用 `docker compose run --rm api staff create -username root` 创建（见 auth.md 的“后台员工”），
+  用 `docker compose run --rm api staff create -username root` 创建（见 `internal/modules/staff/docs/staff.md`），
   会话和日志参数是 `STAFF_*` 环境变量。前台用户的登录会话和微信凭据是 `AUTH_*` /
-  `WECHAT_*` 环境变量（见 auth.md 的“前台用户”和 `configs/.env.example`）。其中
+  `WECHAT_*` 环境变量（见 `internal/modules/user/docs/user.md` 和 `configs/.env.example`）。其中
   `USER_PUBLIC_BASE_URL` 是必需项，缺了 api 和 worker 都起不来；`WECHAT_*` 四个入口按产品
   需要组合，每个入口的 `_APP_ID` / `_SECRET` 成对配置才启用，只配一半启动失败；其余 `AUTH_*`
   时长有默认值，`USER_COOKIE_DELIVERY_ORIGINS`、`USER_TRUSTED_IDENTITY_HEADER`（网关信任 header 模式，见
@@ -87,7 +87,7 @@
   目录放校验文件；开放平台网站应用填授权回调域；网站应用的"业务域名"校验文件和授权回调域是两回事；
 - **网关的职责**：网关只做 TLS 终止、同源反代、`X-Forwarded-For`（配合 `HTTP_TRUSTED_PROXY=true`）、
   粗粒度限流，转发前删掉客户端带来的 `X-User-ID`。不在网关里做登录和 JWT 校验：那样吊销要等 token
-  过期才生效，† 操作也拿不到 `auth_time`（见 [auth.md](auth.md) 的"前台鉴权"）。
+  过期才生效，依赖会话的操作（† 操作、绑定、重新验证）也不可用，只会返回 `session_unavailable`（见 [auth.md](auth.md) 的"前台鉴权"）。
 
 ## 版本固定
 

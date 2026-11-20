@@ -35,7 +35,7 @@ func completeURL(intent domain.OAuthFlowIntent, result string) string {
 	return completePath + "?" + q.Encode()
 }
 
-// handleOAuthCallback 是浏览器授权回调的编排（见 docs/agents/auth.md 的"登录入口"），GET 和表单 POST
+// handleOAuthCallback 是浏览器授权回调的编排（见 internal/modules/user/docs/user.md 的"登录入口"），GET 和表单 POST
 // 共用：一次性取 state → 校验绑定 cookie → 用 state 里保存的 verifier/nonce 和回调参数换身份 → 按 intent
 // 分发。登录 intent 把结果写成一次性兑换（60 秒）再跳回前端；绑定/重新验证 intent 在这里直接完成。
 // 任何失败都跳回前端 /auth/complete?result=<错误码>，只有 state 本身无效时才直接 400（无处可跳）。

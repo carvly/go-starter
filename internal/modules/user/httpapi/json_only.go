@@ -7,7 +7,7 @@ import (
 	"github.com/labstack/echo/v5"
 )
 
-// NewJSONOnly 限定带请求体的写操作只接受 application/json（见 docs/agents/auth.md 的"登录接口的防护"，
+// NewJSONOnly 限定带请求体的写操作只接受 application/json（见 internal/modules/user/docs/user.md 的"登录接口的防护"，
 // 挂在哪些操作上见 routes.go）：跨站页面只能发不触发预检的表单请求，限定 JSON 后它们到不了
 // handler。Apple 的 form_post 回调是第三期的事，到那一步时这个中间件不挂在
 // 回调路由上。

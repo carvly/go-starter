@@ -376,7 +376,7 @@ func (h *Handler) checkBindingCookie(c *echo.Context, statePrefix8 string, want 
 	return nil
 }
 
-// respondWithTokens 按请求来源交付 refresh token（见 docs/agents/auth.md 的"会话"）：Origin
+// respondWithTokens 按请求来源交付 refresh token（见 internal/modules/user/docs/user.md 的"会话"）：Origin
 // 在 cookie 交付名单内 → 只进 httpOnly cookie，响应体不含；否则放响应体，客户端
 // 存进系统安全存储。
 func (h *Handler) respondWithTokens(c *echo.Context, tokens *domain.IssuedTokens) error {

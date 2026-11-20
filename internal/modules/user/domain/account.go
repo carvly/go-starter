@@ -12,7 +12,7 @@ import (
 )
 
 // fallbackDisplayName 是建号时的兜底昵称：小程序入口拿不到微信昵称、或昵称
-// 为空时使用（见 docs/agents/auth.md 的"前台用户"）。
+// 为空时使用（见 internal/modules/user/docs/user.md）。
 const fallbackDisplayName = "微信用户"
 
 // ProviderWeChat 是 user_identities.provider 的取值（微信，含四个入口）。

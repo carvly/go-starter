@@ -119,7 +119,7 @@
   （`get<资源>`），冲突后前端用它取最新内容；表结构见 [database.md](database.md) 的"写
   Repository"；
 - 员工身份用 `httpserver.StaffSessionFrom(c)` 读，和前台的 `UserSession` 是两套键和类型；
-  会话、权限检查、操作日志的实现见 [auth.md](auth.md) 的“后台员工”；
+  会话、权限检查、操作日志的实现见 [staff.md](../../internal/modules/staff/docs/staff.md)；
 - 可选托管后台前端的构建产物（`AdminDeps.Static`，组合根在 `internal/app/admin_ui.go` 接入，
   见 [admin.md](admin.md) 的“构建与部署”）：存在的文件原样返回，`assets/` 下缺失的文件 404，
   其余路径（前端路由）回退到 `index.html`；`assets/` 长期缓存，其余 `no-cache`；`/admin/v1`
@@ -131,7 +131,7 @@
 全局链固定为：Recover → RequestID → BodyLimit → CORS → Secure → 全局限流 →
 Prometheus 指标 → Timeout（`internal/platform/httpserver/server.go` 的 `newServer`，前台和
 后台共用，后台没有 CORS）。鉴权是操作级中间件，由模块挂载；user 还给自己的操作挂了按 IP
-的限流和只接受 JSON 请求体的中间件，见 [auth.md](auth.md)。
+的限流和只接受 JSON 请求体的中间件，见 [user.md](../../internal/modules/user/docs/user.md) 的"登录接口的防护"。
 
 - Recover 必须在最外层：Echo v5 自己不恢复 panic，没有 Recover 时靠 net/http 在连接级
   兜底——连接直接断开、客户端拿不到响应，panic 只进 `http.Server.ErrorLog`（Echo 把它接到了
@@ -139,7 +139,7 @@ Prometheus 指标 → Timeout（`internal/platform/httpserver/server.go` 的 `ne
   500，panic 内容带着 request_id 进结构化日志。Timeout 用的是 `ContextTimeout`，不另起
   goroutine，handler 里的 panic 仍在 Recover 的调用栈上；
 - CORS 必须在限流前面，否则预检请求会被拦。前台 CORS 开了 `AllowCredentials: true`
-  （refresh token 按 Origin 经 cookie 交付，见 [auth.md](auth.md)），所以 `AllowOrigins`
+  （refresh token 按 Origin 经 cookie 交付，见 [user.md](../../internal/modules/user/docs/user.md) 的"会话"），所以 `AllowOrigins`
   必须显式列出，不能用 `*`；`AllowHeaders` 只放行 `Authorization` 和 `Content-Type`，
   新增自定义请求头要同时加进这个白名单（`server.go` 的 `New`）；
 - `IPExtractor` 必须按部署拓扑配置（`HTTP_TRUSTED_PROXY`），否则按 IP 的限流可以被

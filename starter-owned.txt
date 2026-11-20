@@ -41,6 +41,7 @@ web/admin/.gitignore
 Makefile
 AGENTS.md
 docs/ARCHITECTURE.md
+docs/STARTER.md
 docs/agents/
 .github/workflows/
 .github/dependabot.yml

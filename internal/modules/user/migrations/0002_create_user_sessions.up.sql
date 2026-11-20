@@ -1,4 +1,4 @@
--- 前台用户的登录会话，规则见 docs/agents/auth.md 的"会话"。登录时签发，每个请求按 sid
+-- 前台用户的登录会话，规则见 internal/modules/user/docs/user.md 的"会话"。登录时签发，每个请求按 sid
 -- 校验；吊销（登出、踢下线、停用、注销）只标记 revoked_at，user 的定时清理任务再物理删除
 -- 已过期、以及吊销超过保留期的行。
 CREATE TABLE user_sessions (

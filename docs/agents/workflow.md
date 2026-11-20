@@ -118,7 +118,9 @@ Makefile   scripts/check-*.sh   .github/workflows/**   .github/dependabot.yml
 - 文档在代码定稿之后写，照着最终的代码写，不照着提案或设想写。写进文档的函数名、配置项、
   命令、数字（超时、限额、默认值），都在代码里搜一遍确认；
 - `scripts/check-docs.sh` 检查文档里用反引号写的仓库路径、Go 标识符（`pkg.Name`、
-  `Type.Method`）、测试名、配置项和 `make` 目标都存在；数字和行为描述它查不出来；
+  `Type.Method`）、测试名、配置项和 `make` 目标都存在，Markdown 链接的目标存在（指向已删除模块的跳过），
+  并禁止已提交的文档引用本地的 `docs/proposals/`、`docs/archive/` 里的具体文件；数字和行为描述它查不出来。
+  扫描范围是 `AGENTS*.md`、`README.md`、`docs/` 下的文档和各模块的 `docs/`；
 - 改完代码跑 `make doc-impact`（`scripts/doc-impact.sh`，默认和 main 的分叉点比较）：它按
   "事实来源："、文档里引用的改动文件、这次删掉的函数和类型名，列出可能受影响的文档，逐篇对照
   代码核对，要改的在同一个改动里改。提交钩子对暂存区跑同一个检查，只提示、不拦截；

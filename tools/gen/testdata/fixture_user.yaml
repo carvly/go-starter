@@ -1,4 +1,4 @@
-# 前台用户（见 docs/agents/auth.md 的"前台用户"）。账号只能经登录创建，后台只能查看、停用和启用。
+# 前台用户（见 internal/modules/user/docs/user.md）。账号只能经登录创建，后台只能查看、停用和启用。
 module: fxuser
 resource: fx_user
 title: 用户

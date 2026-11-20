@@ -12,7 +12,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-files=(AGENTS.md AGENTS.project.md README.md docs/ARCHITECTURE.md docs/PROJECT.md)
+files=(AGENTS.md AGENTS.project.md README.md docs/ARCHITECTURE.md docs/PROJECT.md docs/STARTER.md)
 while IFS= read -r f; do files+=("$f"); done < <(find docs/agents internal/modules -path '*/docs/*.md' -o -path 'docs/agents/*.md' 2>/dev/null | sort)
 
 missing=0
@@ -53,7 +53,7 @@ for f in "${files[@]}"; do
 done
 
 # Markdown 链接 [文字](相对路径)：目标相对文档所在目录解析，必须存在；外部链接、页内锚点、行内代码和代码块
-# 里的内容跳过。
+# 里的内容跳过，指向已删除模块（starter-removed.yaml）的链接也跳过。
 check_links() {
 	local f="$1" dir line target path
 	dir="$(dirname "$f")"
@@ -71,6 +71,11 @@ check_links() {
 			continue
 			;;
 		esac
+		skip=0
+		for module in $removed_modules; do
+			case "$dir/$path" in *"internal/modules/$module/"* | *"internal/modules/$module") skip=1 ;; esac
+		done
+		[ "$skip" = 0 ] || continue
 		if [ ! -e "$dir/$path" ]; then
 			echo "$f:$line: 链接的目标不存在：$target" >&2
 			missing=1

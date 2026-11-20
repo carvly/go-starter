@@ -3,7 +3,7 @@
 事实来源：`web/admin/`、`api/admin.yaml`、`internal/platform/httpserver/admin.go`、`internal/app/admin_ui.go`、`internal/app/admin_spec.go`
 
 改 `web/admin/` 或 `api/admin.yaml` 之前读这篇。后台接口、会话和权限见 [http.md](http.md) 的
-“后台接入面”和 [auth.md](auth.md) 的“后台员工”。
+“后台接入面”和 [staff.md](../../internal/modules/staff/docs/staff.md)。
 
 ## 工具链
 

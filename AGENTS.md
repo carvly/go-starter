@@ -13,7 +13,9 @@
 | 需要多步写操作原子提交 | [`docs/agents/transactions.md`](docs/agents/transactions.md) |
 | 发布/消费事件、定时任务 | [`docs/agents/queue.md`](docs/agents/queue.md) |
 | 改接口（`api/openapi.yaml`、`api/admin.yaml`）、handler、错误码、中间件 | [`docs/agents/http.md`](docs/agents/http.md) |
-| 鉴权、前台登录与会话（微信等第三方登录）、给接口加登录保护、密码相关、后台员工与权限 | [`docs/agents/auth.md`](docs/agents/auth.md) |
+| 鉴权、给接口加登录保护、密码与令牌、前后台两套身份体系 | [`docs/agents/auth.md`](docs/agents/auth.md) |
+| 前台用户与登录（微信等第三方登录、会话、注销、业务怎么扩展用户） | [`internal/modules/user/docs/user.md`](internal/modules/user/docs/user.md) |
+| 后台员工、角色权限、操作日志、应急恢复 | [`internal/modules/staff/docs/staff.md`](internal/modules/staff/docs/staff.md) |
 | 后台前端（`web/admin/`）、改 `api/admin.yaml` 后生成客户端 | [`docs/agents/admin.md`](docs/agents/admin.md) |
 | 改架构图（`docs/diagrams/`），或改了图里画的模块、依赖、进程拓扑 | [`docs/agents/diagrams.md`](docs/agents/diagrams.md) |
 | 日志、指标、健康检查 | [`docs/agents/observability.md`](docs/agents/observability.md) |

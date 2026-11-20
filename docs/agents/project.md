@@ -9,7 +9,8 @@
    starter，并添加项目自己的 origin。Go module path 保持 `app.local`，避免全仓 import 冲突。
 2. 按需执行 `make remove-modules M="user"` 或 `make remove-modules M="staff"`。工具自动带上
    依赖闭包、删除 spec/前端/迁移并写 `starter-removed.yaml`；已上线项目的表不会自动删除。
-3. 项目身份只改 `README.md`、`AGENTS.project.md`、`docs/PROJECT.md` 和 `docs/diagrams/`；项目自己的变更记录写在根目录
+3. 项目身份只改 `README.md`（改写成项目自己的说明；starter 的使用说明在 starter 所有的 `docs/STARTER.md`）、
+   `AGENTS.project.md`、`docs/PROJECT.md` 和 `docs/diagrams/`；项目自己的变更记录写在根目录
    `CHANGELOG.md`（项目所有，starter 不提供也不覆盖；starter 的发版说明是 `starter-changelog.md`）。
    项目规则不要写进 starter 的 `AGENTS.md` 或 `docs/ARCHITECTURE.md`。
 4. 照 `configs/.env.example` 写 `.env`，只填保留模块的必需配置。执行 `make setup`、

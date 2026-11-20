@@ -28,7 +28,7 @@ type AccessClaims struct {
 }
 
 // Issuer 是 access token 的 iss，Audience 是 aud：代码常量，不做成配置
-// （见 docs/agents/auth.md 的"会话"）。后台员工的服务端会话不走 JWT，不会撞。
+// （见 docs/agents/auth.md 的"两套身份体系"）。后台员工的服务端会话不走 JWT，不会撞。
 const (
 	Issuer   = "go-starter"
 	Audience = "user"

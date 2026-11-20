@@ -23,6 +23,7 @@ internal/modules/<m>/
                      httpapi/ 和 adminapi/ 至少有一个（staff 和生成的纯后台模块只有 adminapi/）
   events/            （可选）对外公开的事件契约，只有纯数据类型
   jobs/              （可选）river worker 薄适配
+  docs/              （可选）只属于本模块的说明（如 user/docs/user.md），随模块一起删除
 ```
 
 参考实现：
