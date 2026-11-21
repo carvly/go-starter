@@ -36,7 +36,7 @@ func (c *RedisCache[T]) Get(ctx context.Context, id string) (*T, bool, error) {
 	if err != nil {
 		if !errors.Is(err, redis.Nil) {
 			c.logger.WarnContext(ctx, "redis cache get failed, treating as miss",
-				"domain", c.domain, "id", id, "error", err)
+				slog.String("domain", c.domain), slog.String("id", id), slog.Any("error", err))
 		}
 		return nil, false, nil
 	}
@@ -45,7 +45,7 @@ func (c *RedisCache[T]) Get(ctx context.Context, id string) (*T, bool, error) {
 	if err := json.Unmarshal(data, &v); err != nil {
 		// 结构体字段变更导致旧值解不出来时也当未命中，TTL 会让它自愈，不需要版本号。
 		c.logger.WarnContext(ctx, "redis cache unmarshal failed, treating as miss",
-			"domain", c.domain, "id", id, "error", err)
+			slog.String("domain", c.domain), slog.String("id", id), slog.Any("error", err))
 		return nil, false, nil
 	}
 	return &v, true, nil
@@ -59,7 +59,7 @@ func (c *RedisCache[T]) Set(ctx context.Context, id string, v *T, ttl time.Durat
 		return fmt.Errorf("cache: marshal: %w", err)
 	}
 	if err := c.client.Set(ctx, c.key(id), data, ttl).Err(); err != nil {
-		c.logger.WarnContext(ctx, "redis cache set failed", "domain", c.domain, "id", id, "error", err)
+		c.logger.WarnContext(ctx, "redis cache set failed", slog.String("domain", c.domain), slog.String("id", id), slog.Any("error", err))
 	}
 	return nil
 }
@@ -67,7 +67,7 @@ func (c *RedisCache[T]) Set(ctx context.Context, id string, v *T, ttl time.Durat
 // Delete 同样 fail open。"先写 DB 再删缓存"的顺序由调用方保证。
 func (c *RedisCache[T]) Delete(ctx context.Context, id string) error {
 	if err := c.client.Del(ctx, c.key(id)).Err(); err != nil {
-		c.logger.WarnContext(ctx, "redis cache delete failed", "domain", c.domain, "id", id, "error", err)
+		c.logger.WarnContext(ctx, "redis cache delete failed", slog.String("domain", c.domain), slog.String("id", id), slog.Any("error", err))
 	}
 	return nil
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 
 	"app.local/internal/config"
 	"app.local/internal/kit/lifecycle"
@@ -12,14 +13,15 @@ import (
 )
 
 // RunWorker 运行后台任务进程：river 消费 client + 只有 /healthz、/metrics 的
-// 内部 server，任一组件异常退出都会让整个进程以非零退出码结束。
-func RunWorker(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
+// 内部 server，任一组件异常退出都会让整个进程以非零退出码结束。日志写 stdout。
+func RunWorker(ctx context.Context, cfg *config.Config) error {
+	id, logger := newProcess(cfg, "worker", os.Stdout)
 	configs, err := loadModuleConfigs(cfg.Source)
 	if err != nil {
 		return err
 	}
-	logger.InfoContext(ctx, "starting worker", "config", configs.Redacted(cfg))
-	in, err := NewInfra(ctx, cfg, logger)
+	logger.InfoContext(ctx, "starting worker", slog.Any("config", configs.Redacted(cfg)))
+	in, err := NewInfra(ctx, cfg, id, logger)
 	if err != nil {
 		return err
 	}
@@ -35,7 +37,7 @@ func RunWorker(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 
 	return lifecycle.Run(ctx, shutdownTimeout,
 		queue.Component(workClient),
-		httpserver.Component("worker internal", httpserver.NewInternal(logger), cfg.HTTP.InternalAddr),
+		httpserver.Component("worker internal", httpserver.NewInternal(logger, in.Metrics), cfg.HTTP.InternalAddr),
 	)
 }
 

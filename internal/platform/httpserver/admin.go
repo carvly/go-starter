@@ -10,12 +10,13 @@ import (
 	"slices"
 	"strings"
 
-	echoprometheus "github.com/labstack/echo-prometheus"
 	"github.com/labstack/echo/v5"
 	"github.com/labstack/echo/v5/middleware"
+	"github.com/prometheus/client_golang/prometheus"
 
 	"app.local/api"
 	"app.local/internal/config"
+	"app.local/internal/platform/metrics"
 )
 
 // AdminAPIPrefix 是全部后台路由的前缀，与 api/admin.yaml 的 servers.url 一致。
@@ -48,10 +49,14 @@ type AdminDeps struct {
 
 	// Static 是后台前端的构建产物（index.html + assets/）；为 nil 时不托管前端。
 	Static fs.FS
+
+	// Metrics 是后台端口自己的 Registry，不能与前台共用：两个端口各自被抓取，内容重复会让求和算重。
+	// 为 nil 时用一个空的。
+	Metrics *prometheus.Registry
 }
 
 // NewAdmin 构造后台 server：与前台共用中间件链，但不开 CORS（同源部署），
-// 文档页只暴露 admin.yaml，指标用单独的 subsystem。它监听独立地址，
+// 文档页只暴露 admin.yaml，指标的 server 标签是 admin。它监听独立地址，
 // 公网入口上根本没有 /admin/v1。
 func NewAdmin(deps AdminDeps) (*echo.Echo, error) {
 	// 失败即关闭：有后台路由却没有鉴权，说明提供员工账号的模块没接上，这时启动会把后台
@@ -60,11 +65,12 @@ func NewAdmin(deps AdminDeps) (*echo.Echo, error) {
 		return nil, errors.New("configure admin server: admin routes registered without Auth (session/permission) middleware")
 	}
 	e, registry, err := newServer(common{
-		Logger:           deps.Logger,
-		HTTP:             deps.HTTP,
-		RateLimitStore:   deps.RateLimitStore,
-		CSP:              adminCSP,
-		MetricsSubsystem: "echo_starter_kit_admin",
+		Logger:         deps.Logger,
+		HTTP:           deps.HTTP,
+		RateLimitStore: deps.RateLimitStore,
+		CSP:            adminCSP,
+		Name:           "admin",
+		Metrics:        deps.Metrics,
 		// 前端的静态文件来自内存里的构建产物，冷启动打开页面就要并发加载几十个，计入按 IP 的
 		// 全局限流会让页面加载一半；限流只管接口。
 		SkipRateLimit: func(c *echo.Context) bool { return deps.Static != nil && c.Path() == spaRoute },
@@ -82,7 +88,7 @@ func NewAdmin(deps AdminDeps) (*echo.Echo, error) {
 	if err := registerAPIDocs(e, deps.HTTP.APIDocsEnabled, "/admin.yaml", api.AdminSpec); err != nil {
 		return nil, fmt.Errorf("configure admin server: API docs: %w", err)
 	}
-	e.GET("/metrics", echoprometheus.NewHandlerWithConfig(echoprometheus.HandlerConfig{Gatherer: registry}))
+	e.GET("/metrics", echo.WrapHandler(metrics.Handler(registry)))
 	if deps.Static != nil {
 		registerSPA(e, deps.Static)
 	}

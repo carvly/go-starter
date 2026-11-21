@@ -5,8 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 
-	"app.local/internal/kit/logctx"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"app.local/internal/kit/logctx"
 )
 
 func orphanKinds(ctx context.Context, pool *pgxpool.Pool, known []string) ([]string, error) {
@@ -59,10 +60,10 @@ func CancelOrphans(ctx context.Context, pool *pgxpool.Pool, known []string) (map
 func WarnOrphans(ctx context.Context, pool *pgxpool.Pool, known []string, logger *slog.Logger) {
 	orphans, err := orphanKinds(ctx, pool, known)
 	if err != nil {
-		logger.WarnContext(ctx, "queue: failed to check orphan jobs", "error", err)
+		logger.WarnContext(ctx, "queue: failed to check orphan jobs", slog.Any("error", err))
 		return
 	}
 	for _, kind := range orphans {
-		logger.WarnContext(ctx, "queue: jobs without a registered worker; run api queue cancel-orphans after all instances are upgraded", logctx.KeyJobKind, kind)
+		logger.WarnContext(logctx.WithJobKind(ctx, kind), "queue: jobs without a registered worker; run api queue cancel-orphans after all instances are upgraded")
 	}
 }

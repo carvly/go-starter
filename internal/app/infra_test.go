@@ -8,6 +8,7 @@ import (
 	"github.com/alicebob/miniredis/v2"
 
 	"app.local/internal/config"
+	"app.local/internal/platform/process"
 )
 
 // pgxpool.NewWithConfig 只解析配置、不立即连接，所以这些测试不需要真实 Postgres。
@@ -44,7 +45,7 @@ func testModuleConfigs(t *testing.T) moduleConfigs {
 }
 
 func TestNewInfra_WithoutRedis(t *testing.T) {
-	in, err := NewInfra(t.Context(), baseTestConfig(), discardLogger())
+	in, err := NewInfra(t.Context(), baseTestConfig(), process.New("api", "test"), discardLogger())
 	if err != nil {
 		t.Fatalf("NewInfra() error = %v", err)
 	}
@@ -63,7 +64,7 @@ func TestNewInfra_WithRedis_RegistersPinger(t *testing.T) {
 	cfg := baseTestConfig()
 	cfg.Redis.Addr = mr.Addr()
 
-	in, err := NewInfra(t.Context(), cfg, discardLogger())
+	in, err := NewInfra(t.Context(), cfg, process.New("api", "test"), discardLogger())
 	if err != nil {
 		t.Fatalf("NewInfra() error = %v", err)
 	}

@@ -11,17 +11,18 @@ import (
 	"log/slog"
 )
 
-// 关联字段的键名，全项目只用这一套。
+// 关联字段的键名，全项目只用这一套。不导出：其它包只能经下面的 With* 写入，引用不到键名，
+// 手写同名字段只能用字面量，由 sloglint 的 forbidden-keys 拦下。
 const (
-	KeyRequestID = "request_id"
-	KeyUserID    = "user_id"
-	KeyStaffID   = "staff_id"
-	KeyMethod    = "method"
-	KeyRoute     = "route"
+	keyRequestID = "request_id"
+	keyUserID    = "user_id"
+	keyStaffID   = "staff_id"
+	keyMethod    = "method"
+	keyRoute     = "route"
 	// 与 river 自己日志里的键一致，按任务类型检索时两边都能查到。
-	KeyJobKind = "job_kind"
-	KeyJobID   = "job_id"
-	KeyAttempt = "attempt"
+	keyJobKind = "job_kind"
+	keyJobID   = "job_id"
+	keyAttempt = "attempt"
 )
 
 type loggerKey struct{}
@@ -78,11 +79,22 @@ func hasKey(attrs []slog.Attr, key string) bool {
 	return false
 }
 
+// WithUserID 记录这条日志涉及的前台用户：登录态请求里是当前用户（由鉴权写入），没有登录态的
+// 路径（刷新令牌、注销任务）是被处理的那个用户。
+func WithUserID(ctx context.Context, id string) context.Context {
+	return With(ctx, slog.String(keyUserID, id))
+}
+
+// WithStaffID 记录当前操作的后台员工。
+func WithStaffID(ctx context.Context, id string) context.Context {
+	return With(ctx, slog.String(keyStaffID, id))
+}
+
 // WithRequestID 记录 request_id：既作为关联字段输出，也单独保存原始值，供跨进程传播
 // （入队时写进任务 metadata）读取。
 func WithRequestID(ctx context.Context, id string) context.Context {
 	ctx = context.WithValue(ctx, requestIDKey{}, id)
-	return With(ctx, slog.String(KeyRequestID, id))
+	return With(ctx, slog.String(keyRequestID, id))
 }
 
 // RequestID 没有绑定时返回空字符串：不是所有调用都来自一次 HTTP 请求。
@@ -96,4 +108,23 @@ func RequestID(ctx context.Context) string {
 // WithRequest 同时绑定 request_id 和这次请求使用的 logger。
 func WithRequest(ctx context.Context, base *slog.Logger, requestID string) context.Context {
 	return WithLogger(WithRequestID(ctx, requestID), base)
+}
+
+// WithRoute 记录请求的方法和路由模板。route 为空（没匹配上路由）时不写：原始路径不进日志字段。
+func WithRoute(ctx context.Context, method, route string) context.Context {
+	ctx = With(ctx, slog.String(keyMethod, method))
+	if route != "" {
+		ctx = With(ctx, slog.String(keyRoute, route))
+	}
+	return ctx
+}
+
+// WithJobKind 记录日志涉及的任务类型。
+func WithJobKind(ctx context.Context, kind string) context.Context {
+	return With(ctx, slog.String(keyJobKind, kind))
+}
+
+// WithJob 记录正在执行的任务：类型、ID、第几次执行。
+func WithJob(ctx context.Context, kind string, id int64, attempt int) context.Context {
+	return With(WithJobKind(ctx, kind), slog.Int64(keyJobID, id), slog.Int(keyAttempt, attempt))
 }

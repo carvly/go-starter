@@ -4,7 +4,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -14,7 +13,6 @@ import (
 	"app.local/internal/app"
 	"app.local/internal/config"
 	"app.local/internal/platform/healthcheck"
-	"app.local/internal/platform/logger"
 )
 
 func main() {
@@ -32,15 +30,10 @@ func main() {
 		os.Exit(healthcheck.Run(cfg.HTTP.InternalAddr))
 	}
 
-	log := logger.New(cfg.LogLevel, os.Stdout, logger.Process("worker", cfg.InstanceID)...)
-	// 没有绑定 request 的代码路径（比如 river 执行任务时）经 logctx.From 拿到的是
-	// slog.Default()，设成同一个 logger，格式和级别才一致。
-	slog.SetDefault(log)
-
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	if err := app.RunWorker(ctx, cfg, log); err != nil {
+	if err := app.RunWorker(ctx, cfg); err != nil {
 		fmt.Fprintln(os.Stderr, "worker:", err)
 		os.Exit(1)
 	}

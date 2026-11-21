@@ -100,8 +100,8 @@
   `x-field: money`（整数，单位：分），用多行输入框的长文本写 `x-field: text`；密码写
   `format: password`（表单不去掉首尾空格）；请求体里的字符串放进 `required` 表示不能为空。缺了
   `go test ./tools/gen/...` 失败并写明位置和改法；
-- 中间件链与前台相同，但不开 CORS（同源部署），带 CSP，指标的 subsystem 是
-  `echo_starter_kit_admin`；`/admin/v1` 分组上先校验写请求的 `Origin` / `Sec-Fetch-Site`
+- 中间件链与前台相同，但不开 CORS（同源部署），带 CSP，指标的 `server` 标签是
+  `admin`（后台端口有自己的 Registry，不输出运行时指标，见 [observability.md](observability.md) 的"指标"）；`/admin/v1` 分组上先校验写请求的 `Origin` / `Sec-Fetch-Site`
   （会话用 cookie，防跨站请求伪造，必须等于 `HTTP_ADMIN_ORIGIN`），再执行 `AdminDeps.Auth`
   （会话与权限检查，由组合根的 `adminAuth()` 提供，可以有多个、按顺序执行），最后是 `AdminDeps.Middlewares`（如操作
   日志）。**有后台路由而 `Auth` 为空时 `NewAdmin` 报错**，不会把后台接口裸露出来；只挂了别的
@@ -128,12 +128,15 @@
 
 ## 中间件顺序
 
-全局链固定为：Recover → RequestID → BodyLimit → CORS → Secure → 全局限流 →
-Prometheus 指标 → Timeout（`internal/platform/httpserver/server.go` 的 `newServer`，前台和
+全局链固定为：指标 → Recover → RequestID → BodyLimit → CORS → Secure → 全局限流 →
+Timeout（`internal/platform/httpserver/server.go` 的 `newServer`，前台和
 后台共用，后台没有 CORS）。鉴权是操作级中间件，由模块挂载；user 还给自己的操作挂了按 IP
 的限流和只接受 JSON 请求体的中间件，见 [user.md](../../internal/modules/user/docs/user.md) 的"登录接口的防护"。
 
-- Recover 必须在最外层：Echo v5 自己不恢复 panic，没有 Recover 时靠 net/http 在连接级
+- 指标必须在最外层，紧接着是 Recover：指标要看到 Recover 把 panic 转成的错误，才能按 500 计入。**错误在指标中间件里
+  渲染**：它把 handler 链返回的错误交给 `HTTPErrorHandler`，然后返回 nil，耗时才包含写出错误响应的时间，状态码取实际写出的。
+  所以在它外面再加的中间件看不到错误，需要看错误的中间件挂在它里面；`method` 由它的 `methodName` 归一化，日志字段
+  与指标标签同值。除此之外 Recover 必须在所有中间件外面：Echo v5 自己不恢复 panic，没有 Recover 时靠 net/http 在连接级
   兜底——连接直接断开、客户端拿不到响应，panic 只进 `http.Server.ErrorLog`（Echo 把它接到了
   应用日志，但不带 request_id，也不经过错误处理器）。Recover 让 panic 渲染成固定文案的
   500，panic 内容带着 request_id 进结构化日志，堆栈是单独的 `stack` 字段（只取 panic 所在的 goroutine：Echo 默认取全部

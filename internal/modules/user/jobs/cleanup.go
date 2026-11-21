@@ -4,6 +4,7 @@ package jobs
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/riverqueue/river"
 
@@ -34,6 +35,6 @@ func (w *CleanupWorker) Work(ctx context.Context, _ *river.Job[CleanupArgs]) err
 	if err != nil {
 		return err
 	}
-	logctx.From(ctx).InfoContext(ctx, "user: purged expired rows", "oauth_states", states, "user_sessions", sessions)
+	logctx.From(ctx).InfoContext(ctx, "user: purged expired rows", slog.Int64("oauth_states", states), slog.Int64("user_sessions", sessions))
 	return nil
 }

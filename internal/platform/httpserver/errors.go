@@ -81,16 +81,16 @@ func newHTTPErrorHandler() echo.HTTPErrorHandler {
 
 		status, body := describe(err)
 
-		attrs := []any{"status", status, "code", body.Code}
+		attrs := []slog.Attr{slog.Int("status", status), slog.String("code", body.Code)}
 		if pe, ok := errors.AsType[*middleware.PanicStackError](err); ok {
-			attrs = append(attrs, "error", pe.Err, "stack", string(pe.Stack))
+			attrs = append(attrs, slog.Any("error", pe.Err), slog.String("stack", string(pe.Stack)))
 		} else {
-			attrs = append(attrs, "error", err)
+			attrs = append(attrs, slog.Any("error", err))
 		}
 		if be, ok := errs.As(err); ok {
-			attrs = append(attrs, "error_kind", be.Kind.String())
+			attrs = append(attrs, slog.String("error_kind", be.Kind.String()))
 		}
-		logger.Log(c.Request().Context(), levelOf(status), "http request failed", attrs...)
+		logger.LogAttrs(c.Request().Context(), levelOf(status), "http request failed", attrs...)
 
 		if body.RetryAfter > 0 {
 			c.Response().Header().Set("Retry-After", strconv.Itoa(body.RetryAfter))
@@ -102,7 +102,7 @@ func newHTTPErrorHandler() echo.HTTPErrorHandler {
 			writeErr = c.JSON(status, body)
 		}
 		if writeErr != nil {
-			logger.ErrorContext(c.Request().Context(), "failed to write error response", "error", writeErr)
+			logger.ErrorContext(c.Request().Context(), "failed to write error response", slog.Any("error", writeErr))
 		}
 	}
 }

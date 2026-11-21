@@ -298,9 +298,9 @@ func TestServer_PanicRendersInternalErrorAndLogsRequestID(t *testing.T) {
 	}
 }
 
-// 指标的 url 标签必须是路由模板：带 ID 的路径和扫描器打出的 404 路径都不能成为标签值，
+// 指标的 route 标签必须是路由模板：带 ID 的路径和扫描器打出的 404 路径都不能成为标签值，
 // 否则每个 ID、每个乱扫的路径各占一条时间序列。
-func TestServer_MetricsURLLabelIsRouteTemplate(t *testing.T) {
+func TestServer_MetricsRouteLabelIsRouteTemplate(t *testing.T) {
 	e := newTestServer(t, discardLogger(), false)
 	get(e, httpserver.APIPrefix+"/widgets/0193f0a2-0000-7000-8000-000000000001")
 	get(e, "/no/such/path-1")
@@ -309,10 +309,10 @@ func TestServer_MetricsURLLabelIsRouteTemplate(t *testing.T) {
 	body := get(e, "/metrics").Body.String()
 	for _, leaked := range []string{"0193f0a2-0000-7000-8000-000000000001", "/no/such/path-1", "/no/such/path-2"} {
 		if strings.Contains(body, leaked) {
-			t.Errorf("/metrics 里出现了原始路径 %q，url 标签应该是路由模板", leaked)
+			t.Errorf("/metrics 里出现了原始路径 %q，route 标签应该是路由模板", leaked)
 		}
 	}
-	if want := `url="` + httpserver.APIPrefix + `/widgets/:id"`; !strings.Contains(body, want) {
+	if want := `route="` + httpserver.APIPrefix + `/widgets/:id"`; !strings.Contains(body, want) {
 		t.Errorf("/metrics 里没有 %s，带参数的路由应按模板计数", want)
 	}
 }

@@ -3,6 +3,7 @@ package jobs
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
 	"github.com/riverqueue/river"
@@ -34,6 +35,6 @@ func (w *AuditCleanupWorker) Work(ctx context.Context, _ *river.Job[AuditCleanup
 	if err != nil {
 		return err
 	}
-	logctx.From(ctx).InfoContext(ctx, "staff: purged audit logs", "deleted", n, "retention", w.retention)
+	logctx.From(ctx).InfoContext(ctx, "staff: purged audit logs", slog.Int64("deleted", n), slog.Duration("retention", w.retention))
 	return nil
 }

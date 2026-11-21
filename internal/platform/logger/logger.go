@@ -9,10 +9,9 @@ import (
 	"os"
 
 	"app.local/internal/kit/logctx"
-	"app.local/internal/platform/buildinfo"
 )
 
-// New 构造进程的根 logger：JSON 输出，attrs 是每条记录都带的静态字段（见 Process），
+// New 构造进程的根 logger：JSON 输出，attrs 是每条记录都带的静态字段（见 process.Identity.LogAttrs），
 // 并从 ctx 补上关联字段。进程里其它 logger（slog.Default、Echo、river）都应由它派生，
 // 否则拿不到关联字段。level 不识别时回落到 info：日志级别配错不应该让服务启动失败。
 // w 是 systemd 接到 journald 的流时，每行带上级别前缀（见 priorityWriter）。
@@ -38,15 +37,6 @@ func Ensure(l *slog.Logger) *slog.Logger {
 		return l
 	}
 	return slog.New(&contextHandler{inner: l.Handler()})
-}
-
-// Process 是标识进程的静态字段：哪个服务、哪个版本、哪个实例。
-func Process(service, instance string) []slog.Attr {
-	return []slog.Attr{
-		slog.String("service", service),
-		slog.String("version", buildinfo.Version()),
-		slog.String("instance", instance),
-	}
 }
 
 func attrsToArgs(attrs []slog.Attr) []any {

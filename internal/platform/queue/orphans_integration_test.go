@@ -3,11 +3,32 @@
 package queue_test
 
 import (
+	"bytes"
+	"encoding/json"
 	"testing"
 
+	"app.local/internal/platform/logger"
 	"app.local/internal/platform/postgres/pgtest"
 	"app.local/internal/platform/queue"
 )
+
+// 告警的任务类型用 job_kind：与任务执行日志同一个字段，按任务类型检索时能一起查到。
+func TestWarnOrphans_LogsJobKind(t *testing.T) {
+	pool := pgtest.Pool(t)
+	ctx := t.Context()
+	if _, err := pool.Exec(ctx, `INSERT INTO river_job (kind, state, args, max_attempts) VALUES ('orphan', 'available', '{}', 3)`); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	queue.WarnOrphans(ctx, pool, []string{"known"}, logger.New("info", &buf))
+	var rec map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &rec); err != nil {
+		t.Fatalf("log = %q: %v", buf.String(), err)
+	}
+	if rec["job_kind"] != "orphan" {
+		t.Errorf("log = %v, want job_kind=orphan", rec)
+	}
+}
 
 func TestCancelOrphans(t *testing.T) {
 	pool := pgtest.Pool(t)

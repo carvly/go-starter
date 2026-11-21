@@ -8,7 +8,6 @@ import (
 
 	"app.local/internal/config"
 	"app.local/internal/platform/cli"
-	"app.local/internal/platform/logger"
 )
 
 // RunCommand 执行模块提供的子命令（api <模块> <动作> ...），返回进程退出码。
@@ -22,12 +21,11 @@ func RunCommand(ctx context.Context, cfg *config.Config, args []string, stdout, 
 		_, _ = fmt.Fprintln(stderr, "api: load module config:", err)
 		return cli.ExitError
 	}
-	log := logger.New(cfg.LogLevel, stderr, logger.Process("api", cfg.InstanceID)...)
-	slog.SetDefault(log)
+	id, log := newProcess(cfg, "api", stderr)
 
-	in, err := NewInfra(ctx, cfg, log)
+	in, err := NewInfra(ctx, cfg, id, log)
 	if err != nil {
-		log.ErrorContext(ctx, "build infra", "error", err)
+		log.ErrorContext(ctx, "build infra", slog.Any("error", err))
 		return cli.ExitError
 	}
 	defer in.Close(ctx)

@@ -4,12 +4,10 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log/slog"
 	"maps"
 	"slices"
 
 	"app.local/internal/config"
-	"app.local/internal/platform/logger"
 	"app.local/internal/platform/queue"
 )
 
@@ -24,9 +22,8 @@ func RunQueueCommand(ctx context.Context, cfg *config.Config, args []string, std
 	if err != nil {
 		return err
 	}
-	log := logger.New(cfg.LogLevel, stderr, logger.Process("api", cfg.InstanceID)...)
-	slog.SetDefault(log)
-	in, err := NewInfra(ctx, cfg, log)
+	id, log := newProcess(cfg, "api", stderr)
+	in, err := NewInfra(ctx, cfg, id, log)
 	if err != nil {
 		return err
 	}

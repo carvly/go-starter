@@ -4,6 +4,7 @@ package jobs
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/riverqueue/river"
 
@@ -30,11 +31,12 @@ func NewUserDeletedWorker[T interface {
 }
 
 func (w *UserDeletedWorker) Work(ctx context.Context, job *river.Job[events.UserDeleted]) error {
+	ctx = logctx.WithUserID(ctx, job.Args.UserID)
 	for _, c := range w.cleaners {
 		if err := c(ctx, job.Args.UserID); err != nil {
 			return err
 		}
 	}
-	logctx.From(ctx).InfoContext(ctx, "user: user_deleted processed", "user_id", job.Args.UserID, "cleaners", len(w.cleaners))
+	logctx.From(ctx).InfoContext(ctx, "user: user_deleted processed", slog.Int("cleaners", len(w.cleaners)))
 	return nil
 }

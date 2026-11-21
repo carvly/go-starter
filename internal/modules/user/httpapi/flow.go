@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/url"
 
@@ -19,10 +20,10 @@ func logFailedVerification(c *echo.Context, provider string, err error) {
 	ctx := c.Request().Context()
 	log := logctx.From(ctx)
 	if errors.Is(err, oauth.ErrNoUnionID) {
-		log.ErrorContext(ctx, "user: third-party identity has no unionid, check open platform binding", "provider", provider, "error", err)
+		log.ErrorContext(ctx, "user: third-party identity has no unionid, check open platform binding", slog.String("provider", provider), slog.Any("error", err))
 		return
 	}
-	log.WarnContext(ctx, "user: third-party credential verification failed", "provider", provider, "error", err)
+	log.WarnContext(ctx, "user: third-party credential verification failed", slog.String("provider", provider), slog.Any("error", err))
 }
 
 // 回调跳回前端的固定路径；result 取值 ok 或错误码。

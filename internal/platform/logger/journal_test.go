@@ -4,6 +4,7 @@ package logger_test
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,7 +28,7 @@ func logAllLevels(t *testing.T, f *os.File) []string {
 	t.Helper()
 	log := logger.New("debug", f)
 	log.DebugContext(t.Context(), "d")
-	log.InfoContext(t.Context(), "i", "level", "ERROR")
+	log.InfoContext(t.Context(), "i", slog.String("level", "ERROR"))
 	log.WarnContext(t.Context(), "w")
 	log.ErrorContext(t.Context(), "e")
 	out, err := os.ReadFile(f.Name())

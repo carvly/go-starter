@@ -76,7 +76,7 @@ func (s *RedisStore) allow(ctx context.Context, identifier string) (bool, error)
 	defer cancel()
 	res, err := s.limiter.Allow(ctx, s.prefix+identifier, s.limit)
 	if err != nil {
-		s.logger.WarnContext(ctx, "redis rate limiter failed, allowing request", "key", s.prefix+identifier, "error", err)
+		s.logger.WarnContext(ctx, "redis rate limiter failed, allowing request", slog.String("key", s.prefix+identifier), slog.Any("error", err))
 		return true, nil
 	}
 	return res.Allowed > 0, nil

@@ -64,17 +64,13 @@ type workMiddleware struct {
 }
 
 func (m *workMiddleware) Work(ctx context.Context, job *rivertype.JobRow, doInner func(context.Context) error) error {
-	ctx = logctx.With(ctx,
-		slog.String(logctx.KeyJobKind, job.Kind),
-		slog.Int64(logctx.KeyJobID, job.ID),
-		slog.Int(logctx.KeyAttempt, job.Attempt),
-	)
+	ctx = logctx.WithJob(ctx, job.Kind, job.ID, job.Attempt)
 	if id := requestIDOf(job); id != "" {
 		ctx = logctx.WithRequestID(ctx, id)
 	}
 	defer func() {
 		if r := recover(); r != nil {
-			m.log.ErrorContext(ctx, "queue: job panicked", "panic", r, "stack", string(debug.Stack()))
+			m.log.ErrorContext(ctx, "queue: job panicked", slog.Any("panic", r), slog.String("stack", string(debug.Stack())))
 			// 继续抛给 river：由它记录堆栈、按失败处理和重试。
 			panic(r)
 		}
@@ -93,11 +89,11 @@ func (m *workMiddleware) logFailure(ctx context.Context, job *rivertype.JobRow, 
 	}
 	switch _, cancelled := errors.AsType[*rivertype.JobCancelError](err); {
 	case cancelled:
-		m.log.WarnContext(ctx, "queue: job cancelled", "error", err)
+		m.log.WarnContext(ctx, "queue: job cancelled", slog.Any("error", err))
 	case job.Attempt >= job.MaxAttempts:
-		m.log.ErrorContext(ctx, "queue: job failed, no retries left", "error", err)
+		m.log.ErrorContext(ctx, "queue: job failed, no retries left", slog.Any("error", err))
 	default:
-		m.log.WarnContext(ctx, "queue: job failed, will retry", "error", err)
+		m.log.WarnContext(ctx, "queue: job failed, will retry", slog.Any("error", err))
 	}
 }
 

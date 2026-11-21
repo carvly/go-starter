@@ -1,6 +1,29 @@
-# 可观测性：日志、request_id、指标、健康检查
+# 可观测性：命名约定、日志、指标、健康检查
 
-事实来源：`internal/platform/logger/`、`internal/kit/logctx/`、`internal/platform/buildinfo/`、`internal/platform/queue/logfields.go`、`internal/platform/httpserver/identity.go`、`internal/platform/httpserver/health.go`、`internal/platform/healthcheck/`、`internal/platform/httpserver/server.go`
+事实来源：`internal/platform/process/`、`internal/platform/metrics/`、`internal/platform/httpserver/metrics.go`、`internal/platform/logger/`、`internal/kit/logctx/`、`internal/platform/buildinfo/`、`internal/platform/queue/logfields.go`、`internal/platform/httpserver/identity.go`、`internal/platform/httpserver/health.go`、`internal/platform/healthcheck/`、`internal/platform/httpserver/server.go`
+
+## 命名约定：日志、指标用同一套名字
+
+日志进 Loki、指标进 Prometheus 之后，靠**同名同值**的字段在 Grafana 里互相跳转、互相过滤。规则：
+
+1. **进程身份只有一个来源**：`process.Identity`（`process.New(服务名, INSTANCE_ID)`，版本取 `buildinfo.Version`），
+   由组合根的 `newProcess`（`internal/app/infra.go`）构造，同时构造根 logger，挂在 `Infra.Identity`。日志的静态字段（`Identity.LogAttrs`）和指标 `service_info` 的标签（`Identity.Labels`）
+   都从它取，不在别处另写服务名；
+2. **身份字段用 OpenTelemetry 资源属性的名字，点换成下划线**：`service_name`、`service_version`、`service_instance_id`
+   （`process` 包里不导出的常量）。Loki 接收 OTLP 时用的就是这组名字，Grafana 默认按 `service_name` 关联；
+   **不用 `instance`**：Prometheus 的 `instance` 标签是抓取地址 `host:port`，含义不同；
+3. **同一含义在日志字段和指标标签里同名**：
+
+   | 含义 | 日志字段 | 指标标签 |
+   |---|---|---|
+   | 服务、版本、实例 | `service_name`、`service_version`、`service_instance_id` | `service_info` 的同名标签 |
+   | 请求方法、路由模板 | `method`、`route` | `method`、`route` |
+   | 响应状态码 | `status`（错误日志） | `status` |
+
+   新增字段或标签前先查这张表和日志的"每条日志都带的字段"，已有的含义用已有的名字；
+4. **环境不由应用输出**：`APP_ENV` 只出现在启动日志的配置快照里，日志和指标都不带环境字段。一套采集端只采一个环境，
+   环境标签在采集端加（Alloy 的 `loki.write`/`prometheus.remote_write` 的 `external_labels`），应用不重复写；
+5. **标签只放低基数的值**：Loki 的标签和 Prometheus 的标签都不放 ID、路径、用户输入（见下面"指标"）。
 
 ## 日志
 
@@ -13,7 +36,7 @@
   `c.Logger()`、river 的 logger、第三方库经 `slog.New(h)` 重建的），只要调用带 ctx 的方法，字段都在。
   调用方已经显式写了同名字段时以调用方为准，不输出重复的键；
 - 接收外部 logger 的平台组件（HTTP server、river client）都经 `logger.Ensure` 取用：不是 `logger.New` 构造的
-  logger 会被包一层，传错 logger 也不丢字段。`slog.SetDefault` 在 `cmd/*/main.go` 里设为根 logger；
+  logger 会被包一层，传错 logger 也不丢字段。`slog.SetDefault` 由 `newProcess` 设为根 logger；
 - `context.Value` 只放横切信息（这里的 logger 和关联字段，以及 `internal/platform/dbtx` 的事务句柄、
   `internal/kit/uow` 的提交后回调），不传业务依赖。
 
@@ -21,19 +44,24 @@
 
 | 字段 | 含义 | 写入方 |
 |---|---|---|
-| `service`、`version`、`instance` | 哪个进程（`api`/`worker`）、哪个构建、哪个实例 | 根 logger 的静态字段（`logger.Process`）；`version` 见下，`instance` 是配置 `INSTANCE_ID`，默认主机名 |
+| `service_name`、`service_version`、`service_instance_id` | 哪个进程（`api`/`worker`）、哪个构建、哪个实例 | 根 logger 的静态字段（`process.Identity` 的 `LogAttrs`，见上面"命名约定"）；版本见下，实例是配置 `INSTANCE_ID`，默认主机名 |
 | `request_id` | 串起网关 access log、api、worker 的同一次请求 | HTTP：RequestID 中间件（请求头 `X-Request-Id`，网关传入即沿用）；任务：队列中间件 |
 | `method`、`route` | 属于哪个接口；`route` 是路由模板，没匹配上路由时不输出 | RequestID 中间件 |
-| `user_id` / `staff_id` | 前台用户 / 后台员工 | `httpserver.SetUserSession` / `SetStaffSession`：两种鉴权都只经它们写入身份 |
-| `job_kind`、`job_id`、`attempt` | 哪个任务、第几次执行；`job_kind` 与 river 自己日志里的键相同 | 队列执行中间件 |
+| `user_id` / `staff_id` | 前台用户 / 后台员工 | `httpserver.SetUserSession` / `SetStaffSession`：两种鉴权都只经它们写入身份。没有登录态、但处理的是某个用户的路径（刷新令牌、注销任务）用 `logctx.WithUserID` 写进 ctx |
+| `job_kind`、`job_id`、`attempt` | 哪个任务、第几次执行；`job_kind` 与 river 自己日志里的键相同 | 队列执行中间件；孤儿任务告警只带 `job_kind` |
 
-这些字段由入口写入，**业务代码不手写**（`logctx` 的 `Key*` 常量是全部键名）。没有请求的路径（启动、
+这些字段由入口经 `logctx` 的 `With*` 函数（`WithRequestID`、`WithRoute`、`WithUserID`、`WithStaffID`、`WithJob`、
+`WithJobKind`）写入 ctx，**业务代码不手写**。键名常量在 `logctx`、`process` 里都不导出，其它包引用不到；slog 自己的
+`time`、`level`、`msg`、`source` 同样不能当字段名。手写只能写字面量，sloglint 的 `forbidden-keys` 检查字面量
+（`.golangci.yml`；它不解析别的包的常量，所以键名不能导出），只放行定义和写入它们的 `internal/kit/logctx`、
+`internal/platform/logger`、`internal/platform/process`。来自 ctx 的字段与调用方显式写的同名时根 Handler 不重复输出，
+但静态字段和 slog 自己的键会在同一行 JSON 里重复，多数解析器只保留后一个。没有请求的路径（启动、
 定时任务的调度循环）只有静态字段。
 
-- `version`：构建时用 `-ldflags "-X app.local/internal/platform/buildinfo.version=..."` 注入
+- `service_version`：构建时用 `-ldflags "-X app.local/internal/platform/buildinfo.version=..."` 注入
   （`deploy/Dockerfile` 的 `VERSION` 构建参数，镜像构建不传时是 `dev`）；没注入时取 Go 嵌入的 VCS 提交前 12 位
   （本地在仓库里 `go build` 时有，有未提交改动加 `-dirty`），都没有时是 `dev`；
-- 同一台机器上跑同一服务的多个实例时，必须分别设置 `INSTANCE_ID`，否则 `instance` 相同；
+- 同一台机器上跑同一服务的多个实例时，必须分别设置 `INSTANCE_ID`，否则 `service_instance_id` 相同；
 - 跨进程传播：入队时队列中间件把 `logctx.RequestID(ctx)` 写进任务 metadata 的 `request_id`，执行时从
   metadata 读回；事件不声明 request_id 字段；
 - 不用 `slog` 的 `WithGroup`：分组之后，关联字段会落进分组里，按顶层字段检索不到。
@@ -56,12 +84,14 @@
 
 - 取 logger 用 `logctx.From(ctx)`，调用带 ctx 的方法（`InfoContext`、`WarnContext`、`ErrorContext`）：关联字段只在 ctx 里，
   不带 ctx 的 `Info`/`Error` 会丢掉它们。golangci-lint 的 `sloglint`（`context: all`）强制这一点，启动、关停这类
-  没有请求的路径也传进程的 ctx；
+  没有请求的路径也传进程的 ctx。不用 `slog.InfoContext` 这类全局函数（`no-global`），logger 从 ctx 或依赖注入取；
+- 字段一律写成 `slog.Attr`（`slog.String`、`slog.Int64`、`slog.Any("error", err)`…），不写键值对（`attr-only`）：
+  键值对少写一个值时编译能过，运行时才变成 `!BADKEY`；
 - `msg` 是固定的英文短语，形如 `"<模块或包>: <发生了什么>"`（`"user: user_deleted processed"`、
   `"queue: ..."`），**变量一律放字段，不拼进 msg**：同一类事件的 msg 完全相同，才能按 msg 聚合、
   计数和精确检索（`sloglint` 的 `static-msg` 检查）；
 - 字段名用 snake_case（`sloglint` 的 `key-naming-case` 检查），同一个含义全项目只用一个名字：上表的字段由入口写入，不手写；事件里常用的有
-  `error`（直接传 error 值）、`panic`（recover 到的值）、`stack`（panic 所在 goroutine 的堆栈，单独成字段，不拼进
+  `error`（`slog.Any("error", err)`）、`panic`（recover 到的值）、`stack`（panic 所在 goroutine 的堆栈，单独成字段，不拼进
   `error`）、实体 ID（`<实体>_id`）；新增常用字段时先搜一遍已有叫法；
 - 一个错误只记一次：能返回就返回，由处理它的那一层记录。HTTP 请求返回的错误由错误处理器统一记录
   （`"http request failed"`，带 `status`、`code`、`error`，业务错误另带 `error_kind`，panic 另带 `stack`；级别按状态码，
@@ -104,19 +134,39 @@ journalctl -u '<服务名>@*' -o json | jq -r '[._SYSTEMD_UNIT, .MESSAGE] | @tsv
 
 ## 指标
 
-- api 进程：`echoprometheus` 中间件 + `GET /metrics`，用独立的 Registry；后台 server
-  （配置了 `HTTP_ADMIN_ADDR` 时）在自己的端口上另有 `/metrics`，subsystem 是
-  `echo_starter_kit_admin`；
-- worker 进程：内部端口（`HTTP_INTERNAL_ADDR`，默认 `:9090`）上的 `/metrics`；
-- 告警规则不在这个仓库里，由使用方在自己的监控平台配置。
+- **每个端口一个 Registry，内容不重叠**：同一进程的多个端口各自被抓取，内容重复会让按服务求和算重。
+  进程的 Registry（`metrics.NewRuntimeRegistry`，由 `NewInfra` 构造，挂在 `Infra.Metrics`）带 Go 运行时、进程指标、
+  `service_info` 和业务自定义指标，由 api 的前台端口、worker 的内部端口（`HTTP_INTERNAL_ADDR`，默认 `:9090`）输出；
+  api 的后台端口用自己的 Registry（`metrics.NewRegistry`），只有 `service_info` 和后台的 HTTP 指标；
+- `service_info` 恒为 1，标签是进程身份，每个端口都有：join 按 `job`/`instance` 匹配，缺了它这个端口的指标就过滤不到；
+- `/metrics` 由 `metrics.Handler` 输出，客户端在 `Accept` 里要求时用 OpenMetrics 格式（exemplar 只在这个格式里出现）；
+- 告警规则不在这个仓库里，由使用方在自己的监控平台配置；
+- 按服务过滤时 join `service_info`：Prometheus 的 `job`/`instance` 来自抓取配置，应用不重复输出：
+  `sum by (service_name) (rate(http_server_request_duration_seconds_count[5m]) * on (job, instance) group_left (service_name) service_info)`。
+
+### HTTP 指标
+
+`internal/platform/httpserver/metrics.go` 的中间件，一个直方图：
+
+```
+http_server_request_duration_seconds{server, method, route, status}
+```
+
+- `_count` 就是请求数，错误率按 `status` 算，不另设计数器；`server` 是 `api` 或 `admin`；
+- 中间件在链的最外层：被限流（429）、请求体超限（413）、panic（500）的请求都计入。handler 返回的错误由它交给
+  `HTTPErrorHandler` 渲染，耗时包含写出错误响应的时间，`status` 是实际写出的状态码；Recover 原样再抛的
+  `http.ErrAbortHandler` 按 500 计入后继续抛；`/healthz`、`/readyz`、`/metrics` 不计入；
+- `method` 只取标准方法，其余归为 `_OTHER`：方法名来自客户端，不能任意增加标签值。归一化在入口（`methodName`），
+  日志的 `method` 字段同值；
+- 包装了响应又没实现 `Unwrap` 时取不到实际写出的状态码，`status` 按错误推算（`StatusOf`），不会把错误请求记成 200。
 
 ### 路径一律用路由模板
 
-- HTTP 指标的 `url` 标签是路由模板（`c.Path()`，如 `/v1/me`），按模板聚合：
-  `sum(rate(<subsystem>_requests_total{method="GET", url="/v1/me"}[5m]))`。没匹配上路由的
-  404 共用一个标签值（`DoNotUseRequestPathFor404`），扫描器的乱扫路径不会各占一条时间序列；
-  `server_test.go` 的 `TestServer_MetricsURLLabelIsRouteTemplate` 固定了这一点；
-- 自定义指标同样不把 ID、查询参数、用户输入放进标签。"某个具体对象被访问了多少次"查日志，不进指标。
+- `route` 是路由模板（`c.Path()`，如 `/v1/widgets/:id`），按模板聚合：
+  `sum(rate(http_server_request_duration_seconds_count{method="GET", route="/v1/me"}[5m]))`。没匹配上路由的
+  请求 `route` 为空，扫描器的乱扫路径不会各占一条时间序列；
+  `server_test.go` 的 `TestServer_MetricsRouteLabelIsRouteTemplate` 固定了这一点；
+- 自定义指标同样不把 ID、查询参数、用户输入放进标签，注册进 `Infra.Metrics`（api 进程的在前台端口输出）。"某个具体对象被访问了多少次"查日志，不进指标。
 
 ## 健康检查
 

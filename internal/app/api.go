@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"os"
 	"time"
 
 	"github.com/labstack/echo/v5"
@@ -12,6 +13,7 @@ import (
 	"app.local/internal/config"
 	"app.local/internal/kit/lifecycle"
 	"app.local/internal/platform/httpserver"
+	"app.local/internal/platform/metrics"
 	"app.local/internal/platform/ratelimit"
 )
 
@@ -19,13 +21,15 @@ import (
 const shutdownTimeout = 20 * time.Second
 
 // RunAPI 运行 HTTP API 进程，阻塞到 ctx 取消或组件出错。
-func RunAPI(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
+// 日志写 stdout。
+func RunAPI(ctx context.Context, cfg *config.Config) error {
+	id, log := newProcess(cfg, "api", os.Stdout)
 	configs, err := loadModuleConfigs(cfg.Source)
 	if err != nil {
 		return err
 	}
-	logger.InfoContext(ctx, "starting api", "config", configs.Redacted(cfg))
-	in, err := NewInfra(ctx, cfg, logger)
+	log.InfoContext(ctx, "starting api", slog.Any("config", configs.Redacted(cfg)))
+	in, err := NewInfra(ctx, cfg, id, log)
 	if err != nil {
 		return err
 	}
@@ -69,6 +73,7 @@ func apiServerDeps(in *Infra, mods *Modules) httpserver.Deps {
 		Pingers:        in.Pingers,
 		RateLimitStore: ratelimit.NewStore(in.Redis, "global", globalRate(in), in.Logger),
 		Routes:         mods.httpRegistrars(),
+		Metrics:        in.Metrics,
 	}
 }
 
@@ -81,6 +86,7 @@ func adminServerDeps(in *Infra, mods *Modules) httpserver.AdminDeps {
 		Routes:         mods.adminRegistrars(),
 		Auth:           mods.adminAuth(),
 		Static:         adminStatic,
+		Metrics:        metrics.NewRegistry(in.Identity),
 	}
 }
 

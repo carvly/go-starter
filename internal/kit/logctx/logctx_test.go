@@ -48,7 +48,7 @@ func TestWith_DerivedContextsDoNotShareState(t *testing.T) {
 
 func TestWithRequestID_IsBothAttrAndRawValue(t *testing.T) {
 	ctx := logctx.WithRequestID(t.Context(), "rid-1")
-	if logctx.RequestID(ctx) != "rid-1" || attrMap(ctx)[logctx.KeyRequestID] != "rid-1" {
+	if logctx.RequestID(ctx) != "rid-1" || attrMap(ctx)["request_id"] != "rid-1" {
 		t.Errorf("RequestID = %q, Attrs = %v", logctx.RequestID(ctx), logctx.Attrs(ctx))
 	}
 }
@@ -64,5 +64,12 @@ func TestWithRequest_BindsLogger(t *testing.T) {
 func TestFrom_DefaultsWhenUnbound(t *testing.T) {
 	if logctx.From(context.Background()) != slog.Default() {
 		t.Error("未绑定 logger 时应返回 slog.Default()")
+	}
+}
+
+func TestWithUserIDAndStaffID_AreCorrelationFields(t *testing.T) {
+	ctx := logctx.WithStaffID(logctx.WithUserID(t.Context(), "u1"), "s1")
+	if got := attrMap(ctx); got["user_id"] != "u1" || got["staff_id"] != "s1" {
+		t.Errorf("Attrs = %v", logctx.Attrs(ctx))
 	}
 }

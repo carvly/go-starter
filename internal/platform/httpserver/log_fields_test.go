@@ -18,6 +18,7 @@ import (
 	"app.local/internal/kit/logctx"
 	"app.local/internal/platform/httpserver"
 	"app.local/internal/platform/logger"
+	"app.local/internal/platform/process"
 )
 
 func parseLogLines(t *testing.T, buf *bytes.Buffer) []map[string]any {
@@ -39,7 +40,7 @@ func parseLogLines(t *testing.T, buf *bytes.Buffer) []map[string]any {
 // 一次登录态请求里，经任意 logger 输出的记录都带齐请求的关联字段。
 func TestServer_EveryLogInRequestCarriesCorrelationFields(t *testing.T) {
 	var buf bytes.Buffer
-	root := logger.New("info", &buf, logger.Process("api", "host-a")...)
+	root := logger.New("info", &buf, process.New("api", "host-a").LogAttrs()...)
 	e, err := httpserver.New(httpserver.Deps{
 		Logger: root,
 		HTTP: config.HTTPConfig{
@@ -77,7 +78,7 @@ func TestServer_EveryLogInRequestCarriesCorrelationFields(t *testing.T) {
 	for _, rec := range recs {
 		for key, want := range map[string]any{
 			"request_id": "rid-from-gateway", "user_id": "u-1", "method": "GET", "route": "/v1/orders/:id",
-			"service": "api", "instance": "host-a",
+			"service_name": "api", "service_instance_id": "host-a",
 		} {
 			if rec[key] != want {
 				t.Errorf("%q 的 %s = %v, want %v", rec["msg"], key, rec[key], want)
@@ -108,6 +109,24 @@ func TestServer_UnmatchedRouteHasNoRouteField(t *testing.T) {
 			if s, _ := route.(string); strings.Contains(s, "no/such") {
 				t.Errorf("route 不能用原始路径：%v", rec)
 			}
+		}
+	}
+}
+
+// 日志的 method 与指标的 method 标签同值：非标准方法都是 _OTHER。
+func TestServer_NonStandardMethodLoggedAsOther(t *testing.T) {
+	var buf bytes.Buffer
+	e := newTestServer(t, logger.New("info", &buf), false)
+
+	e.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("BREW", "/v1/widgets/1", nil))
+
+	recs := parseLogLines(t, &buf)
+	if len(recs) == 0 {
+		t.Fatal("405 应记一条错误日志")
+	}
+	for _, rec := range recs {
+		if rec["method"] != "_OTHER" {
+			t.Errorf("method = %v, want _OTHER", rec["method"])
 		}
 	}
 }

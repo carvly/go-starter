@@ -3,6 +3,7 @@
 package adminapi
 
 import (
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -121,7 +122,7 @@ func audit(c *echo.Context, svc *staff.Service, staffID, action string, handlerE
 		RequestID: logctx.RequestID(ctx),
 	})
 	if err != nil {
-		c.Logger().ErrorContext(ctx, "staff: record audit failed", "action", action, "error", err)
+		c.Logger().ErrorContext(ctx, "staff: record audit failed", slog.String("action", action), slog.Any("error", err))
 	}
 }
 

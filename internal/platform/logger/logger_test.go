@@ -9,6 +9,7 @@ import (
 
 	"app.local/internal/kit/logctx"
 	"app.local/internal/platform/logger"
+	"app.local/internal/platform/process"
 )
 
 // lines 把 JSON 日志逐行解析；同一条记录里出现重复键时报错（json 解码会静默保留最后一个）。
@@ -50,21 +51,21 @@ func lines(t *testing.T, buf *bytes.Buffer) []map[string]any {
 
 func TestNew_AddsProcessAndContextAttrs(t *testing.T) {
 	var buf bytes.Buffer
-	log := logger.New("info", &buf, logger.Process("api", "host-a")...)
-	ctx := logctx.With(logctx.WithRequestID(t.Context(), "rid-1"), slog.String(logctx.KeyUserID, "u1"))
+	log := logger.New("info", &buf, process.New("api", "host-a").LogAttrs()...)
+	ctx := logctx.With(logctx.WithRequestID(t.Context(), "rid-1"), slog.String("user_id", "u1"))
 
-	log.InfoContext(ctx, "x: happened", "order_id", "o1")
+	log.InfoContext(ctx, "x: happened", slog.String("order_id", "o1"))
 
 	got := lines(t, &buf)[0]
 	for key, want := range map[string]any{
-		"service": "api", "instance": "host-a", "request_id": "rid-1", "user_id": "u1", "order_id": "o1",
+		"service_name": "api", "service_instance_id": "host-a", "request_id": "rid-1", "user_id": "u1", "order_id": "o1",
 	} {
 		if got[key] != want {
 			t.Errorf("%s = %v, want %v（记录：%v）", key, got[key], want, got)
 		}
 	}
-	if v, _ := got["version"].(string); v == "" {
-		t.Errorf("缺少 version：%v", got)
+	if v, _ := got["service_version"].(string); v == "" {
+		t.Errorf("缺少 service_version：%v", got)
 	}
 }
 
@@ -74,7 +75,7 @@ func TestNew_DerivedLoggersKeepContextAttrs(t *testing.T) {
 	ctx := logctx.WithRequestID(t.Context(), "rid-1")
 
 	// 经 With 派生、经 slog.New(Handler()) 重建的 logger（第三方库常见写法）都要带上关联字段。
-	root.With("component", "c").InfoContext(ctx, "a")
+	root.With(slog.String("component", "c")).InfoContext(ctx, "a")
 	slog.New(root.Handler()).InfoContext(ctx, "b")
 
 	for _, rec := range lines(t, &buf) {
@@ -87,10 +88,10 @@ func TestNew_DerivedLoggersKeepContextAttrs(t *testing.T) {
 func TestNew_ExplicitAttrWinsWithoutDuplicateKey(t *testing.T) {
 	var buf bytes.Buffer
 	log := logger.New("info", &buf)
-	ctx := logctx.With(t.Context(), slog.String(logctx.KeyUserID, "from-ctx"))
+	ctx := logctx.With(t.Context(), slog.String("user_id", "from-ctx"))
 
-	log.InfoContext(ctx, "explicit", logctx.KeyUserID, "explicit")
-	log.With(logctx.KeyUserID, "bound").InfoContext(ctx, "bound")
+	log.InfoContext(ctx, "explicit", slog.String("user_id", "explicit"))
+	log.With(slog.String("user_id", "bound")).InfoContext(ctx, "bound")
 
 	recs := lines(t, &buf)
 	if recs[0]["user_id"] != "explicit" || recs[1]["user_id"] != "bound" {

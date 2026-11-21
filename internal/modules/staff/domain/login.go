@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 	"uuid"
 
@@ -131,7 +132,7 @@ func (s *Service) Authenticate(ctx context.Context, token string) (*Principal, e
 	if s.now().Sub(p.LastUsedAt) > time.Minute {
 		if err := s.sessions.TouchSession(ctx, p.SessionID); err != nil {
 			// 只影响空闲超时的精度，不拒绝这次请求。
-			logctx.From(ctx).WarnContext(ctx, "staff: touch session failed", "error", err)
+			logctx.From(ctx).WarnContext(ctx, "staff: touch session failed", slog.Any("error", err))
 		}
 	}
 	return p, nil

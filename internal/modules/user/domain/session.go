@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 	"uuid"
 
+	"app.local/internal/kit/logctx"
 	"app.local/internal/kit/secrand"
 )
 
@@ -106,7 +108,8 @@ func (s *Service) Refresh(ctx context.Context, presented string) (*IssuedTokens,
 		if err := s.sessions.Revoke(ctx, old.ID); err != nil {
 			return nil, fmt.Errorf("refresh: revoke reused session: %w", err)
 		}
-		s.log().WarnContext(ctx, "user: refresh token reuse detected, session revoked", "sid", old.ID, "user_id", old.UserID)
+		ctx = logctx.WithUserID(ctx, old.UserID)
+		s.log().WarnContext(ctx, "user: refresh token reuse detected, session revoked", slog.String("sid", old.ID))
 	}
 	return nil, fmt.Errorf("refresh: %w", ErrInvalidToken)
 }

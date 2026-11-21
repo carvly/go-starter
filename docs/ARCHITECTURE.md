@@ -123,7 +123,7 @@ cmd ──> app ──> modules/*/module.go ──> modules/*/{httpapi,postgres,
 ## 目录速查
 
 ```
-cmd/api, cmd/worker        进程入口：加载配置 → app.RunAPI / app.RunWorker
+cmd/api, cmd/worker        进程入口：加载配置 → 进程身份与根 logger → app.RunAPI / app.RunWorker
 internal/
   app/                     组合根：infra.go、modules.go、migrate.go、module_configs.go、api.go、worker.go（跨模块调用时另有 adapters_*.go）
   kit/                     只依赖标准库的通用件
@@ -140,9 +140,11 @@ internal/
     ratelimit/             Echo 限流的计数存储（Redis GCRA / 内存）
     crypto/                Argon2id、JWT 签发与校验
     oauth/                 第三方登录：浏览器 OAuth 流程与原生 code 换身份（目前只有微信）
-    httpserver/            Echo 构造（前台、后台两个 server）、中间件链、错误渲染、健康检查、API 文档
-    logger/                slog 构造：根 Handler 从 ctx 补关联字段，静态的 service/version/instance
-    buildinfo/             构建版本（日志的 version 字段）
+    httpserver/            Echo 构造（前台、后台两个 server）、中间件链、错误渲染、HTTP 指标、健康检查、API 文档
+    logger/                slog 构造：根 Handler 从 ctx 补关联字段
+    process/               进程身份（service_name/service_version/service_instance_id），日志和指标共用
+    metrics/               每个端口的 Prometheus Registry（service_info，进程的另带运行时指标）与 /metrics handler
+    buildinfo/             构建版本（process 的 service_version）
     healthcheck/           二进制自带的探活子命令
     cli/                   api 子命令的查找与执行（命令由模块提供）
   modules/                 业务模块，每个目录自带 domain/postgres/httpapi[/events/jobs]、
