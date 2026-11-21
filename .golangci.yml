@@ -28,6 +28,35 @@ linters:
       context: all
       static-msg: true
       key-naming-case: snake
+      # 字段一律写成 slog.Attr（slog.String、slog.Any…）：键值对写法少一个值时只在运行时变成 !BADKEY。
+      attr-only: true
+      # 不用 slog 的全局函数：logger 从 ctx 取（logctx.From），测试和组件才能换掉它。
+      no-global: all
+      # 这些字段由 slog 自身（time、level、msg、source）或入口（internal/kit/logctx 与 process.Identity）写入；
+      # 手写会在同一行 JSON 里出现重复的键，多数解析器只保留后一个。
+      forbidden-keys:
+        - time
+        - level
+        - msg
+        - source
+        - request_id
+        - user_id
+        - staff_id
+        - method
+        - route
+        - job_kind
+        - job_id
+        - attempt
+        - service_name
+        - service_version
+        - service_instance_id
+
+  exclusions:
+    rules:
+      # 定义和写入这些字段的地方本身要用到它们。
+      - path: internal/(kit/logctx|platform/logger|platform/process)/
+        linters: [sloglint]
+        text: key is forbidden
 
 formatters:
   enable:
