@@ -93,6 +93,17 @@ ctx；整个进程的关停上限是 20 秒（`internal/app/api.go` 的 `shutdow
 停完就调用 `StopAndCancel`，再最多等 5 秒（`internal/platform/queue/component.go` 的
 `hardStopTimeout`）。
 
+## 发布顺序：worker 先于 api
+
+发布期间新旧版本并存。顺序是迁移 → worker → api：
+
+- 新 api 入队的任务必须由新 worker 处理。反过来，旧 worker 会忽略事件新增的字段、按旧逻辑把任务做完，
+  新字段的效果静默丢失；不认识的新事件类型报 `UnknownJobKindError`，按退避重试到 worker 升级；
+- 新 worker 处理旧 api 入队的任务时没有新字段：这正是"只能新增可选字段"的原因（见"事件契约"）；
+- api 的入队 client 不注册 worker，river 入队时不校验任务类型，新 worker 先上线不影响旧 api 入队；
+- worker 重启期间任务在库里排队，只延迟不丢；被中断的任务按重试再执行一次（见"进程"）。`kill -9` 或崩溃留下的
+  `running` 任务要等 river 的 rescuer 在 1 小时后（`RescueStuckJobsAfter` 的默认值）救回。
+
 ## 删除模块后的存量任务
 
 模块用 `queue.AddWorker` 注册 worker，`queue.Workers` 同时记下 kind：实际注册的 worker 是"本二进制能
