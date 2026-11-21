@@ -3,6 +3,7 @@ package uow
 
 import (
 	"context"
+	"runtime/debug"
 	"sync"
 
 	"app.local/internal/kit/logctx"
@@ -78,7 +79,8 @@ func (h *Hooks) Committed(outer context.Context) {
 func run(ctx context.Context, fn func(context.Context)) {
 	defer func() {
 		if r := recover(); r != nil {
-			logctx.From(ctx).ErrorContext(ctx, "uow: after-commit hook panicked", "panic", r)
+			// panic 到此为止，上层的 Recover 和 river 看不到，堆栈只能在这里留下。
+			logctx.From(ctx).ErrorContext(ctx, "uow: after-commit hook panicked", "panic", r, "stack", string(debug.Stack()))
 		}
 	}()
 	fn(ctx)

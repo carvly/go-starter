@@ -1,12 +1,17 @@
 package uow_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"log/slog"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 
+	"app.local/internal/kit/logctx"
 	"app.local/internal/kit/uow"
 )
 
@@ -97,6 +102,26 @@ func TestAfterCommit_PanicDoesNotEscapeOrSkipOthers(t *testing.T) {
 	}()
 	if !ran {
 		t.Error("前一个回调 panic 后，后面的回调没有执行")
+	}
+}
+
+// 回调的 panic 在这里被吞掉，上面没有 HTTP Recover 或 river 再保存堆栈，日志里必须带上。
+func TestAfterCommit_PanicLogsStack(t *testing.T) {
+	var buf bytes.Buffer
+	ctx := logctx.WithLogger(t.Context(), slog.New(slog.NewJSONHandler(&buf, nil)))
+	txCtx, hooks := uow.WithHooks(ctx)
+	uow.AfterCommit(txCtx, func(context.Context) { panic("boom") })
+	hooks.Committed(ctx)
+
+	var rec map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &rec); err != nil {
+		t.Fatalf("%v: %s", err, buf.String())
+	}
+	if rec["panic"] != "boom" {
+		t.Errorf("panic = %v", rec["panic"])
+	}
+	if stack, _ := rec["stack"].(string); !strings.Contains(stack, "uow_test.go") {
+		t.Errorf("stack 应指到 panic 的位置：%q", stack)
 	}
 }
 

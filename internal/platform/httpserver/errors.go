@@ -79,8 +79,11 @@ func newHTTPErrorHandler() echo.HTTPErrorHandler {
 
 		status, body := describe(err)
 
-		logger.ErrorContext(c.Request().Context(), "http request failed",
-			"status", status, "code", body.Code, "error", err)
+		attrs := []any{"status", status, "code", body.Code, "error", err}
+		if be, ok := errs.As(err); ok {
+			attrs = append(attrs, "error_kind", be.Kind.String())
+		}
+		logger.ErrorContext(c.Request().Context(), "http request failed", attrs...)
 
 		if body.RetryAfter > 0 {
 			c.Response().Header().Set("Retry-After", strconv.Itoa(body.RetryAfter))

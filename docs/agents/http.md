@@ -151,6 +151,30 @@ Prometheus 指标 → Timeout（`internal/platform/httpserver/server.go` 的 `ne
   资源要靠 ctx 一路透传到数据库调用；
 - `/healthz`、`/readyz`、`/metrics` 跳过 CORS、限流和 Timeout。
 
+## 超时与耗时长的操作
+
+**同步接口必须在 `HTTP_REQUEST_TIMEOUT`（默认 10 秒）内完成。** 可能超过的操作（导出、报表、批量导入、
+依赖慢的第三方）一律做成异步任务，不调大全局超时，也不在网关为个别接口放宽读超时：
+
+1. 发起接口在本模块自己的表里建一条任务记录（状态、参数、结果位置），在同一个事务里入队
+   （见 [queue.md](queue.md)），返回 `202` 和任务 ID；
+2. river worker 做实际工作并更新任务状态。单个任务受 river 任务超时约束（见 queue.md 开头），
+   更长的拆成多个任务或实现 `Timeout()`；
+3. 客户端用查询接口轮询状态，完成后取结果；文件类结果给有时效的下载地址。
+
+长请求会占住连接和数据库连接，撞上网关和客户端的超时，发布时还会被优雅关闭截断；异步任务持久化在库里，
+进程重启不丢，失败可重试。
+
+**所有出站调用都必须有超时，并且受 ctx 约束：**
+
+- 数据库、Redis：ctx 一路透传，请求超时或任务超时取消 ctx 时调用随之取消；请求路径上不用
+  `context.Background()` 另起调用；
+- 第三方 HTTP：用 `http.NewRequestWithContext` 构造请求，客户端显式设置 `Timeout`（参照
+  `internal/platform/oauth/wechat.go`），不用不带超时的默认客户端。客户端 `Timeout` 是脱离请求 ctx
+  时（如 worker 里）的兜底上限，请求路径上真正起作用的是 ctx 的截止时间；第三方的正常耗时接近请求预算的，
+  按上一条改成异步；
+- 只重试幂等调用，且重试的总耗时仍在调用方的预算内。
+
 ## API 文档
 
 前台 server 的 `GET /openapi.yaml` 返回嵌入的 spec 原文（`api/embed.go`），`/docs` 是 Redoc

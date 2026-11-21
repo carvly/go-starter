@@ -4,7 +4,6 @@ package jobs
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/riverqueue/river"
 
@@ -30,18 +29,7 @@ func NewUserDeletedWorker[T interface {
 	return w
 }
 
-// Work 额外 recover 一次：river 自己也会把 panic 转成任务失败，这里不依赖对
-// 第三方内部行为的假设。
-func (w *UserDeletedWorker) Work(ctx context.Context, job *river.Job[events.UserDeleted]) (err error) {
-	if id := job.Args.RequestID; id != "" {
-		ctx = logctx.WithRequest(ctx, logctx.From(ctx), id)
-	}
-	defer func() {
-		if r := recover(); r != nil {
-			logctx.From(ctx).ErrorContext(ctx, "user: user_deleted worker panic recovered", "user_id", job.Args.UserID, "panic", r)
-			err = fmt.Errorf("user deleted worker panic: %v", r)
-		}
-	}()
+func (w *UserDeletedWorker) Work(ctx context.Context, job *river.Job[events.UserDeleted]) error {
 	for _, c := range w.cleaners {
 		if err := c(ctx, job.Args.UserID); err != nil {
 			return err

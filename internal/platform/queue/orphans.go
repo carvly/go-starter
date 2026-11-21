@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"app.local/internal/kit/logctx"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -62,6 +63,6 @@ func WarnOrphans(ctx context.Context, pool *pgxpool.Pool, known []string, logger
 		return
 	}
 	for _, kind := range orphans {
-		logger.WarnContext(ctx, "queue: jobs without a registered worker; run api queue cancel-orphans after all instances are upgraded", "kind", kind)
+		logger.WarnContext(ctx, "queue: jobs without a registered worker; run api queue cancel-orphans after all instances are upgraded", logctx.KeyJobKind, kind)
 	}
 }

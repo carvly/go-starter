@@ -128,20 +128,21 @@ internal/
   app/                     组合根：infra.go、modules.go、migrate.go、module_configs.go、api.go、worker.go（跨模块调用时另有 adapters_*.go）
   kit/                     只依赖标准库的通用件
     errs/                  带 Kind 的业务错误，Kind 决定 HTTP 状态码
-    logctx/                ctx 里的 logger 和 request_id
+    logctx/                ctx 里的 logger 和日志关联字段（request_id、user_id、任务 kind 等）
     uow/                   UnitOfWork 契约（uowtest 是测试替身）
     lifecycle/             进程内组件的统一启停
   platform/                与业务无关的基础设施
     postgres/              连接池、cursor 编解码（pgtest：集成测试用的容器化 Postgres）
     dbtx/                  UnitOfWork 实现：Resolve/ResolveTx、嵌套 SAVEPOINT
-    queue/                 river client、事务内入队的 Inserter、worker 组件
+    queue/                 river client、事务内入队的 Inserter、worker 组件、日志字段中间件
     cache/                 RedisCache[T] / NoopCache[T]
     redis/                 Redis 客户端与探活
     ratelimit/             Echo 限流的计数存储（Redis GCRA / 内存）
     crypto/                Argon2id、JWT 签发与校验
     oauth/                 第三方登录：浏览器 OAuth 流程与原生 code 换身份（目前只有微信）
     httpserver/            Echo 构造（前台、后台两个 server）、中间件链、错误渲染、健康检查、API 文档
-    logger/                slog 构造
+    logger/                slog 构造：根 Handler 从 ctx 补关联字段，静态的 service/version/instance
+    buildinfo/             构建版本（日志的 version 字段）
     healthcheck/           二进制自带的探活子命令
     cli/                   api 子命令的查找与执行（命令由模块提供）
   modules/                 业务模块，每个目录自带 domain/postgres/httpapi[/events/jobs]、
@@ -162,8 +163,8 @@ deploy/                    Dockerfile、docker-compose.yml
 ## 一个请求和一个事件怎么走
 
 前台请求都经过 `httpserver` 的全局中间件链、按 tag 生成的模块路由和模块 Service；
-需要异步处理时，业务写入与 river 入队在同一个事务提交，worker 消费方按事件里的 request_id
-重建日志上下文。当前项目的模块清单与链路见 `docs/PROJECT.md`。
+需要异步处理时，业务写入与 river 入队在同一个事务提交，队列中间件经任务 metadata 把请求的 request_id
+带到 worker 的日志上下文。当前项目的模块清单与链路见 `docs/PROJECT.md`。
 
 ## 技术选型
 

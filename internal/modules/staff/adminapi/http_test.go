@@ -2,7 +2,6 @@ package adminapi_test
 
 import (
 	"encoding/json"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -47,7 +46,7 @@ func newServer(t *testing.T) *testServer {
 		staff.Config{SessionIdleTimeout: 30 * time.Minute, SessionMaxAge: 12 * time.Hour, TempPasswordTTL: 24 * time.Hour}, ops)
 	h := adminapi.NewHandler(svc, 12*time.Hour)
 	e, err := httpserver.NewAdmin(httpserver.AdminDeps{
-		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Logger: slog.New(slog.DiscardHandler),
 		HTTP:   config.HTTPConfig{BodyLimitBytes: 1 << 20, RequestTimeout: 5 * time.Second, GlobalRateLimitPerSecond: 1000},
 		Origin: "https://admin.example.com",
 		Routes: []func(*echo.Group){

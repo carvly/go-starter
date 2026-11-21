@@ -19,6 +19,9 @@ type Config struct {
 	// if/switch 分支。
 	AppEnv   string `yaml:"app_env"`
 	LogLevel string `yaml:"log_level"`
+	// InstanceID 写进每条日志的 instance 字段，区分同一服务的多个实例。默认取主机名；
+	// 同一台机器上跑多个实例时必须分别设置。
+	InstanceID string `yaml:"instance_id"`
 
 	HTTP   HTTPConfig   `yaml:"http"`
 	DB     DBConfig     `yaml:"db"`
@@ -116,6 +119,7 @@ func Load() (*Config, error) {
 	}{
 		{"app_env", &cfg.AppEnv},
 		{"log_level", &cfg.LogLevel},
+		{"instance_id", &cfg.InstanceID},
 		{"http", &cfg.HTTP},
 		{"db", &cfg.DB},
 		{"redis", &cfg.Redis},
@@ -128,6 +132,9 @@ func Load() (*Config, error) {
 	}
 	if err := applyEnvOverrides(cfg); err != nil {
 		return nil, fmt.Errorf("config: %w", err)
+	}
+	if cfg.InstanceID == "" {
+		cfg.InstanceID, _ = os.Hostname()
 	}
 	if err := validate(cfg); err != nil {
 		return nil, err
@@ -193,6 +200,7 @@ func defaults() *Config {
 func applyEnvOverrides(cfg *Config) error {
 	setString(&cfg.AppEnv, "APP_ENV")
 	setString(&cfg.LogLevel, "LOG_LEVEL")
+	setString(&cfg.InstanceID, "INSTANCE_ID")
 	setString(&cfg.HTTP.Addr, "HTTP_ADDR")
 	setString(&cfg.HTTP.InternalAddr, "HTTP_INTERNAL_ADDR")
 	setString(&cfg.HTTP.AdminAddr, "HTTP_ADMIN_ADDR")
@@ -296,6 +304,7 @@ func (c *Config) Redacted() map[string]any {
 	return map[string]any{
 		"app_env":            c.AppEnv,
 		"log_level":          c.LogLevel,
+		"instance_id":        c.InstanceID,
 		"http_addr":          c.HTTP.Addr,
 		"http_internal_addr": c.HTTP.InternalAddr,
 		"http_admin_addr":    c.HTTP.AdminAddr,

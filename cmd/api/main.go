@@ -57,7 +57,7 @@ func main() {
 		os.Exit(code)
 	}
 
-	log := logger.New(cfg.LogLevel, os.Stdout)
+	log := logger.New(cfg.LogLevel, os.Stdout, logger.Process("api", cfg.InstanceID)...)
 	// 没有绑定 request 的代码路径（比如 river 执行任务时）经 logctx.From 拿到的是
 	// slog.Default()，设成同一个 logger，格式和级别才一致。
 	slog.SetDefault(log)

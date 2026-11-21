@@ -66,12 +66,11 @@ func NewGuard(svc *staff.Service, ops []staff.Operation) echo.MiddlewareFunc {
 				return next(c)
 			}
 
-			ctx := c.Request().Context()
 			cookie, err := c.Cookie(SessionCookie)
 			if err != nil {
 				return staff.ErrSessionInvalid
 			}
-			p, err := svc.Authenticate(ctx, cookie.Value)
+			p, err := svc.Authenticate(c.Request().Context(), cookie.Value)
 			if err != nil {
 				return err
 			}
@@ -83,7 +82,8 @@ func NewGuard(svc *staff.Service, ops []staff.Operation) echo.MiddlewareFunc {
 				if p.MustChangePassword && !mustChangeAllowed[key] {
 					return staff.ErrPasswordChangeRequired
 				}
-				if err := svc.Authorize(ctx, p, perm); err != nil {
+				// SetStaffSession 换了请求的 ctx（加上 staff_id），要重新取。
+				if err := svc.Authorize(c.Request().Context(), p, perm); err != nil {
 					return err
 				}
 				return next(c)

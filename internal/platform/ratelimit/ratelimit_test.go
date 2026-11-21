@@ -1,7 +1,6 @@
 package ratelimit_test
 
 import (
-	"io"
 	"log/slog"
 	"net"
 	"testing"
@@ -14,7 +13,7 @@ import (
 	"app.local/internal/platform/redis"
 )
 
-func discardLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+func discardLogger() *slog.Logger { return slog.New(slog.DiscardHandler) }
 
 func TestRedisStore_SharesQuotaAcrossStoreInstances(t *testing.T) {
 	mr := miniredis.RunT(t)

@@ -48,7 +48,7 @@ func NewInfra(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*In
 	}
 	handle := dbtx.NewHandle(pool)
 
-	insertClient, err := queue.NewClient(pool, nil, nil)
+	insertClient, err := queue.NewClient(pool, nil, nil, logger)
 	if err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("app: build infra: %w", err)
@@ -66,16 +66,16 @@ func NewInfra(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*In
 		in.Redis = redis.NewClient(cfg.Redis.Addr, cfg.Redis.Password)
 		in.Pingers = append(in.Pingers, redis.NewPinger(in.Redis))
 	} else {
-		logger.Warn("REDIS_ADDR 未配置：缓存退回 Noop，限流按进程内存计数，多实例部署时实际额度 = 配置值 × 实例数")
+		logger.WarnContext(ctx, "REDIS_ADDR 未配置：缓存退回 Noop，限流按进程内存计数，多实例部署时实际额度 = 配置值 × 实例数")
 	}
 	return in, nil
 }
 
 // Close 逆序释放资源。
-func (in *Infra) Close() {
+func (in *Infra) Close(ctx context.Context) {
 	if in.Redis != nil {
 		if err := in.Redis.Close(); err != nil {
-			in.Logger.Error("close redis client", "error", err)
+			in.Logger.ErrorContext(ctx, "close redis client", "error", err)
 		}
 	}
 	if in.Pool != nil {

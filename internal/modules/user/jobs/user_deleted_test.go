@@ -7,7 +7,6 @@ import (
 
 	"github.com/riverqueue/river"
 
-	"app.local/internal/kit/logctx"
 	"app.local/internal/modules/user/events"
 	"app.local/internal/modules/user/jobs"
 )
@@ -68,34 +67,6 @@ func TestUserDeletedWorker(t *testing.T) {
 			t.Errorf("重试后的调用 = %v/%v, want 2/1（a 被重试、两个端口各清一次）", a.calls, b.calls)
 		}
 	})
-}
-
-type cleanerFunc func(context.Context, string) error
-
-func (f cleanerFunc) DeleteUserData(ctx context.Context, userID string) error { return f(ctx, userID) }
-
-func TestUserDeletedWorker_PropagatesRequestID(t *testing.T) {
-	var got string
-	w := jobs.NewUserDeletedWorker([]cleanerFunc{func(ctx context.Context, _ string) error {
-		got = logctx.RequestID(ctx)
-		return nil
-	}})
-	job := &river.Job[events.UserDeleted]{Args: events.UserDeleted{UserID: "u1", RequestID: "req-1"}}
-	if err := w.Work(t.Context(), job); err != nil {
-		t.Fatalf("Work() error = %v", err)
-	}
-	if got != "req-1" {
-		t.Errorf("request_id = %q, want req-1", got)
-	}
-}
-
-func TestUserDeletedWorker_RecoversPanic(t *testing.T) {
-	w := jobs.NewUserDeletedWorker([]cleanerFunc{func(context.Context, string) error {
-		panic("boom")
-	}})
-	if err := w.Work(t.Context(), &river.Job[events.UserDeleted]{Args: events.UserDeleted{UserID: "u1"}}); err == nil {
-		t.Error("panic 应该被转成错误返回")
-	}
 }
 
 // Kind 是存量任务找 worker 的依据，改名会让队列里已有的任务永远没人消费。

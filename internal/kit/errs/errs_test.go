@@ -45,3 +45,23 @@ func TestWithRetryAfter_KeepsSentinel(t *testing.T) {
 		t.Error("WithRetryAfter 不能改动 sentinel 本身")
 	}
 }
+
+func TestKind_String_NamesEveryKind(t *testing.T) {
+	want := map[errs.Kind]string{
+		errs.KindInternal:        "internal",
+		errs.KindInvalid:         "invalid",
+		errs.KindUnauthorized:    "unauthorized",
+		errs.KindForbidden:       "forbidden",
+		errs.KindNotFound:        "not_found",
+		errs.KindConflict:        "conflict",
+		errs.KindTooManyRequests: "too_many_requests",
+	}
+	for k := errs.KindInternal; k <= errs.KindTooManyRequests; k++ {
+		if got := k.String(); got != want[k] {
+			t.Errorf("Kind(%d).String() = %q, want %q", k, got, want[k])
+		}
+	}
+	if got := errs.Kind(255).String(); got != "unknown" {
+		t.Errorf("未知 Kind 的 String() = %q, want unknown", got)
+	}
+}

@@ -2,7 +2,6 @@ package httpapi_test
 
 import (
 	"encoding/json"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -240,7 +239,7 @@ func TestTrustedIdentity_SessionOperationsUnavailable(t *testing.T) {
 	h := httpapi.NewHandler(httpapi.Deps{OAuth: oauth.Registry{"plain": {Provider: stub}}, PublicBaseURL: "https://api.example.com"})
 	pass := func(next echo.HandlerFunc) echo.HandlerFunc { return next }
 	e, err := httpserver.New(httpserver.Deps{
-		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Logger: slog.New(slog.DiscardHandler),
 		HTTP:   config.HTTPConfig{BodyLimitBytes: 1 << 20, RequestTimeout: 5 * time.Second, GlobalRateLimitPerSecond: 1000},
 		CORS:   config.CORSConfig{AllowOrigins: []string{"https://app.example.com"}},
 		Routes: []func(g *echo.Group){func(g *echo.Group) {

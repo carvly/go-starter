@@ -3,7 +3,6 @@ package adminapi_test
 import (
 	"encoding/json"
 
-	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -33,7 +32,7 @@ func newServer(t *testing.T) (*echo.Echo, *domain.Service, *domaintest.Fakes) {
 	svc := domain.NewService(deps)
 	pass := func(next echo.HandlerFunc) echo.HandlerFunc { return next }
 	e, err := httpserver.NewAdmin(httpserver.AdminDeps{
-		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Logger: slog.New(slog.DiscardHandler),
 		HTTP:   config.HTTPConfig{BodyLimitBytes: 1 << 20, RequestTimeout: 5 * time.Second, GlobalRateLimitPerSecond: 1000},
 		Origin: "https://admin.example.com",
 		Routes: []func(*echo.Group){func(g *echo.Group) { adminapi.Register(g, adminapi.NewHandler(svc)) }},

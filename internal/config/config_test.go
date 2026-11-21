@@ -251,3 +251,24 @@ func TestLoad_RateLimitAndTimeoutMustBePositive(t *testing.T) {
 		})
 	}
 }
+
+func TestLoad_InstanceIDDefaultsToHostnameAndEnvOverrides(t *testing.T) {
+	setRequiredEnv(t)
+	host, _ := os.Hostname()
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.InstanceID != host {
+		t.Errorf("InstanceID = %q, want 主机名 %q", cfg.InstanceID, host)
+	}
+
+	t.Setenv("INSTANCE_ID", "api-b")
+	cfg, err = config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.InstanceID != "api-b" || cfg.Redacted()["instance_id"] != "api-b" {
+		t.Errorf("InstanceID = %q, Redacted = %v", cfg.InstanceID, cfg.Redacted()["instance_id"])
+	}
+}

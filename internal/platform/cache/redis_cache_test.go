@@ -1,7 +1,6 @@
 package cache_test
 
 import (
-	"io"
 	"log/slog"
 	"testing"
 	"time"
@@ -24,7 +23,7 @@ func newTestRedis(t *testing.T) *redis.Client {
 }
 
 func discardLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(io.Discard, nil))
+	return slog.New(slog.DiscardHandler)
 }
 
 func TestRedisCache_SetGetDelete(t *testing.T) {

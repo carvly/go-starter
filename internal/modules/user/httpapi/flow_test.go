@@ -3,7 +3,6 @@ package httpapi_test
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -87,7 +86,7 @@ func newFlowServerWith(t *testing.T, registry oauth.Registry) (*echo.Echo, *doma
 		CookieDeliveryOrigins: []string{"https://app.example.com"},
 	})
 	e, err := httpserver.New(httpserver.Deps{
-		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Logger: slog.New(slog.DiscardHandler),
 		HTTP:   config.HTTPConfig{BodyLimitBytes: 1 << 20, RequestTimeout: 5 * time.Second, GlobalRateLimitPerSecond: 1000},
 		CORS:   config.CORSConfig{AllowOrigins: []string{"https://app.example.com", "https://evil.example.com"}},
 		Routes: []func(g *echo.Group){

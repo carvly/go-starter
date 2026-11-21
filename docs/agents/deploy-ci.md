@@ -27,6 +27,8 @@
   加载，不提交）；
 - `APP_ENV` 只用来给日志/指标打标签，不允许拿它做代码分支。多环境靠同一套 key 注入
   不同的值；
+- `INSTANCE_ID` 是日志的 `instance` 字段，默认取主机名；同一台机器上跑同一服务的多个实例时必须分别设置
+  （见 [observability.md](observability.md) 的"每条日志都带的字段"）；
 - Redis 可选：配置了 `REDIS_ADDR` 时缓存（模块按需接入 `internal/platform/cache`）和限流计数用 Redis，
   否则缓存退回 Noop、限流按进程内存计数（启动时会 Warn 一次）。
 
@@ -43,7 +45,9 @@
 - `deploy/Dockerfile` 多阶段构建，最终镜像是 distroless nonroot（不用 root 跑是安全
   基线），`CGO_ENABLED=0`；Node 阶段构建后台前端，产物经 go:embed 打进 api 二进制，worker
   镜像不经过这个阶段（见 [admin.md](admin.md) 的“构建与部署”）。根目录的 `.dockerignore`
-  排除本地的 `web/admin/node_modules`、`dist`；
+  排除本地的 `web/admin/node_modules`、`dist`。构建参数 `VERSION`（如 `--build-arg VERSION=v1.2.3`）
+  经 `-ldflags` 注入日志的 `version` 字段。镜像里的构建不带 VCS 信息，不传时 `version` 是 `dev`，
+  发布构建必须传；
 - `deploy/docker-compose.yml`：postgres → `migrate`（执行 `api migrate up`，只需 `DB_DSN`）→
   api / worker，长期运行的 service 都声明了资源上限。api/worker 不会自己建表；
 - api 进程可以同时跑后台 server：配置 `HTTP_ADMIN_ADDR`（为空不启动）和

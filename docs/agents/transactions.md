@@ -19,7 +19,7 @@
 - `Run` 里的 panic 会先回滚再继续向上抛，由 HTTP 的 Recover 中间件或 river 兜底。
 - 必须等数据对其它连接可见之后才能做的副作用（删缓存等）用 `uow.AfterCommit(ctx, fn)`
   登记：最外层事务提交后执行，事务或所在 SAVEPOINT 回滚时丢弃，不在事务里时立即执行；
-  回调拿到的 ctx 不随调用方取消。回调是尽力而为的：panic 会被记录并吞掉，不影响已提交的
+  回调拿到的 ctx 不随调用方取消。回调是尽力而为的：panic 会被记录（带 `stack`）并吞掉，不影响已提交的
   结果和其它回调；`Commit` 返回错误时（事务可能其实已提交）回调不执行，删缓存这类回调由 TTL
   兜底。`uow.InTransaction(ctx)` 判断当前是否在事务里。新的 `UnitOfWork` 实现必须用 `uow.WithHooks` /
   `Hooks.Committed` 支持它（见 `internal/platform/dbtx/dbtx.go`）。入队不用它：入队要和

@@ -24,13 +24,13 @@ func RunQueueCommand(ctx context.Context, cfg *config.Config, args []string, std
 	if err != nil {
 		return err
 	}
-	log := logger.New(cfg.LogLevel, stderr)
+	log := logger.New(cfg.LogLevel, stderr, logger.Process("api", cfg.InstanceID)...)
 	slog.SetDefault(log)
 	in, err := NewInfra(ctx, cfg, log)
 	if err != nil {
 		return err
 	}
-	defer in.Close()
+	defer in.Close(ctx)
 	cancelled, err := queue.CancelOrphans(ctx, in.Pool, newWorkers(buildModules(in, configs)).Kinds())
 	if err != nil {
 		return err

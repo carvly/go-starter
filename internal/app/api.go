@@ -24,12 +24,12 @@ func RunAPI(ctx context.Context, cfg *config.Config, logger *slog.Logger) error 
 	if err != nil {
 		return err
 	}
-	logger.Info("starting api", "config", configs.Redacted(cfg))
+	logger.InfoContext(ctx, "starting api", "config", configs.Redacted(cfg))
 	in, err := NewInfra(ctx, cfg, logger)
 	if err != nil {
 		return err
 	}
-	defer in.Close()
+	defer in.Close(ctx)
 
 	components, err := apiComponents(in, buildModules(in, configs))
 	if err != nil {

@@ -20,6 +20,7 @@ import (
 	"app.local/internal/config"
 	"app.local/internal/kit/lifecycle"
 	"app.local/internal/kit/logctx"
+	"app.local/internal/platform/logger"
 	"app.local/internal/platform/ratelimit"
 )
 
@@ -106,8 +107,10 @@ type common struct {
 // newServer 构造 Echo 并注册共用的中间件链：Recover → RequestID → BodyLimit →
 // [CORS] → Secure → 全局限流 → 指标 → Timeout。返回的 Registry 供 /metrics 使用。
 func newServer(d common) (*echo.Echo, *prometheus.Registry, error) {
+	// 调用方传入的 logger 不一定来自 logger.New，包一层才能保证请求日志带上关联字段。
+	log := logger.Ensure(d.Logger)
 	e := echo.New()
-	e.Logger = d.Logger
+	e.Logger = log
 	e.Validator = newRequestValidator()
 	e.HTTPErrorHandler = newHTTPErrorHandler()
 
@@ -120,9 +123,15 @@ func newServer(d common) (*echo.Echo, *prometheus.Registry, error) {
 
 	e.Use(middleware.Recover())
 
+	// 请求的关联字段在这里写进 ctx：Echo 先匹配路由再执行 Use 链，c.Path() 已是路由模板；
+	// 没匹配上路由时为空，不用原始路径代替（扫描器的乱扫路径不进日志字段）。
 	e.Use(middleware.RequestIDWithConfig(middleware.RequestIDConfig{
 		RequestIDHandler: func(c *echo.Context, requestID string) {
-			ctx := logctx.WithRequest(c.Request().Context(), d.Logger, requestID)
+			ctx := logctx.WithRequest(c.Request().Context(), log, requestID)
+			ctx = logctx.With(ctx, slog.String(logctx.KeyMethod, c.Request().Method))
+			if route := c.Path(); route != "" {
+				ctx = logctx.With(ctx, slog.String(logctx.KeyRoute, route))
+			}
 			c.SetRequest(c.Request().WithContext(ctx))
 			c.SetLogger(logctx.From(ctx))
 		},
@@ -151,7 +160,7 @@ func newServer(d common) (*echo.Echo, *prometheus.Registry, error) {
 	}
 	store := d.RateLimitStore
 	if store == nil {
-		store = ratelimit.NewStore(nil, "global", ratelimit.PerSecond(d.HTTP.GlobalRateLimitPerSecond), d.Logger)
+		store = ratelimit.NewStore(nil, "global", ratelimit.PerSecond(d.HTTP.GlobalRateLimitPerSecond), log)
 	}
 	rateLimitMw, err := (middleware.RateLimiterConfig{
 		Skipper: func(c *echo.Context) bool {
@@ -192,9 +201,9 @@ func newServer(d common) (*echo.Echo, *prometheus.Registry, error) {
 
 // NewInternal 构造 worker 用的内部 server：只有 /healthz 和 /metrics，
 // 绑在不对外发布的内部端口上。
-func NewInternal(logger *slog.Logger) *echo.Echo {
+func NewInternal(log *slog.Logger) *echo.Echo {
 	e := echo.New()
-	e.Logger = logger
+	e.Logger = logger.Ensure(log)
 	RegisterHealthz(e)
 	e.GET("/metrics", echo.WrapHandler(promhttp.Handler()))
 	return e
@@ -221,7 +230,7 @@ func (s *serverComponent) Start(ctx context.Context) error {
 		HidePort:        true,
 		GracefulTimeout: 15 * time.Second,
 		OnShutdownError: func(err error) {
-			s.e.Logger.Error("graceful shutdown error", "server", s.name, "error", err)
+			s.e.Logger.ErrorContext(ctx, "graceful shutdown error", "server", s.name, "error", err)
 		},
 		BeforeServeFunc: func(srv *http.Server) error {
 			// 连接级读写超时防慢速连接，与 handler 级的 ContextTimeout 互补。
@@ -230,7 +239,7 @@ func (s *serverComponent) Start(ctx context.Context) error {
 			return nil
 		},
 	}
-	s.e.Logger.Info("http server listening", "server", s.name, "addr", s.addr)
+	s.e.Logger.InfoContext(ctx, "http server listening", "server", s.name, "addr", s.addr)
 	return sc.Start(ctx, s.e)
 }
 

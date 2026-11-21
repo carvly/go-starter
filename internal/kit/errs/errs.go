@@ -22,6 +22,28 @@ const (
 	KindTooManyRequests
 )
 
+// String 是写进日志 error_kind 字段的名字，按类别检索和统计错误用。
+func (k Kind) String() string {
+	switch k {
+	case KindInternal:
+		return "internal"
+	case KindInvalid:
+		return "invalid"
+	case KindUnauthorized:
+		return "unauthorized"
+	case KindForbidden:
+		return "forbidden"
+	case KindNotFound:
+		return "not_found"
+	case KindConflict:
+		return "conflict"
+	case KindTooManyRequests:
+		return "too_many_requests"
+	default:
+		return "unknown"
+	}
+}
+
 // Error 的 Code 给机器读，Message 给人读，二者都必须可以安全地返回给客户端，
 // 不能带内部调用链或实现细节。
 type Error struct {

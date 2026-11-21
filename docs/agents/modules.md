@@ -85,6 +85,25 @@ postgres 的未导出内容、不能循环 import），`internal/archtest` 只�
    提供方的错误翻译成消费方自己的错误；
 3. 在 `internal/app/modules.go` 里把适配器传进消费方的 `Deps`。
 
+窄接口按"将来可以原样换成远程调用"来设计。下面几条在单体里同样有收益，拆分时只需换适配器，
+消费方的 domain、测试都不动：
+
+- **形状**：第一个参数是 ctx；参数和返回值只用消费方 domain 里定义的纯数据（基本类型、字符串 ID、
+  `time.Time`，以及由它们组成的 struct、slice、map），不传函数、channel、接口值，也不返回指向提供方
+  内部状态的指针——这样的签名可以直接序列化；
+- **批量**：消费方要处理一组对象时，接口接收 ID 列表、一次返回（如 `GetPublicProfiles`），不在循环里逐个
+  调用。本地调用时这是 N 次查询，远程时是 N 次网络往返；
+- **查不到**：批量接口里缺失的 ID 不出现在结果中，由消费方决定怎么处理；单个查询返回消费方自己定义的错误。
+  提供方的错误只在适配器里翻译，不穿透到消费方；
+- **只读，且不在事务里调用**：跨模块同步调用只用于读。不在 `UnitOfWork.Run` 的闭包里调用跨模块接口：
+  提供方的 Repository 经 `handle.Resolve(ctx)` 取连接，会悄悄加入消费方的事务，单体里看起来"读到了一致的
+  数据"，拆分后这个保证就不存在了。需要的数据在开事务之前查好；要跨模块写，走下面的事件；
+- **契约测试**：每个窄接口在消费方的 `domain/domaintest/` 里定义一套契约用例，写法与
+  [database.md](database.md) 的"Repository 契约测试"相同；内存 fake 和 `internal/app` 里的适配器各跑一遍
+  （适配器那一遍用真实的提供方 Service，归入集成测试）。拆分时远程客户端跑同一套用例。
+
+不为"以后可能拆"在单体里加序列化、网络调用或通用 RPC 层，见下面"拆成独立部署的服务"的"明确不做"。
+
 **一个事件牵动多个模块的写操作**：
 
 1. 发布方在 `events/` 里定义事件，在同一个事务里入队（见 [queue.md](queue.md)）；
@@ -200,7 +219,7 @@ Repository 不是任何公开字段。
 
 | 现状 | 拆分前要改成 | 位置 |
 |---|---|---|
-| 同步调用由组合根用对方的 Service 适配 | 远程客户端（oapi-codegen 按 tag 生成 client）：超时、只重试幂等请求、透传 request_id、把远端错误翻译成消费方的错误；本地和远程两个适配器跑同一套契约测试 | `internal/app/adapters_*.go` |
+| 同步调用由组合根用对方的 Service 适配 | 远程客户端（oapi-codegen 按 tag 生成 client）：超时、只重试幂等请求、透传 request_id、把远端错误翻译成消费方的错误；跑消费方已有的窄接口契约用例（见上面"跨模块协作"） | `internal/app/adapters_*.go` |
 | river 只在同一个库里投递 | river 继续做本服务的 outbox，新增 relay worker 转发到外部 MQ | [queue.md](queue.md) 的“外部消息队列” |
 | JWT 用 HS256 共享密钥 | 只校验不签发的服务出现时换 RS256/ES256 + JWKS，或后端统一用网关信任 header 模式 | `internal/platform/crypto/jwt.go`、[auth.md](auth.md) |
 | 一个组合根装配全部模块 | 每个服务一个显式的组合根（`modules.go`），不在运行时自动判断对方在本进程还是远程 | `internal/app/modules.go` |

@@ -1,10 +1,13 @@
 package httpserver
 
 import (
+	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/labstack/echo/v5"
+
+	"app.local/internal/kit/logctx"
 )
 
 // 每类主体一个类型、一个键：读错了键的 handler 拿到的是零值和 401，
@@ -25,6 +28,7 @@ type UserSession struct {
 // 都写这同一个键，handler 不需要知道当前挂的是哪一种。
 func SetUserSession(c *echo.Context, s UserSession) {
 	c.Set(userSessionKey, s)
+	withLogAttrs(c, slog.String(logctx.KeyUserID, s.UserID))
 }
 
 // UserSessionFrom 取出已鉴权的用户，再把需要的字段作为显式参数传给 Service，
@@ -52,6 +56,14 @@ type StaffSession struct {
 
 func SetStaffSession(c *echo.Context, s StaffSession) {
 	c.Set(staffSessionKey, s)
+	withLogAttrs(c, slog.String(logctx.KeyStaffID, s.StaffID))
+}
+
+// withLogAttrs 把身份写进请求 ctx 的日志关联字段：两种主体的鉴权都只经上面两个函数写入，
+// 这里是 user_id、staff_id 进日志的唯一入口，业务代码不手写。
+func withLogAttrs(c *echo.Context, attrs ...slog.Attr) {
+	r := c.Request()
+	c.SetRequest(r.WithContext(logctx.With(r.Context(), attrs...)))
 }
 
 // StaffSessionFrom 取出已登录的员工；缺失时返回 401。

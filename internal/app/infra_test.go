@@ -1,7 +1,6 @@
 package app
 
 import (
-	"io"
 	"log/slog"
 	"testing"
 	"time"
@@ -14,7 +13,7 @@ import (
 // pgxpool.NewWithConfig 只解析配置、不立即连接，所以这些测试不需要真实 Postgres。
 
 func discardLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(io.Discard, nil))
+	return slog.New(slog.DiscardHandler)
 }
 
 func baseTestConfig() *config.Config {
@@ -49,7 +48,7 @@ func TestNewInfra_WithoutRedis(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewInfra() error = %v", err)
 	}
-	defer in.Close()
+	defer in.Close(t.Context())
 
 	if in.Redis != nil {
 		t.Error("没有配置 REDIS_ADDR 时不应该构造 Redis 客户端")
@@ -68,7 +67,7 @@ func TestNewInfra_WithRedis_RegistersPinger(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewInfra() error = %v", err)
 	}
-	defer in.Close()
+	defer in.Close(t.Context())
 
 	if in.Redis == nil {
 		t.Fatal("配置了 REDIS_ADDR 就应该构造 Redis 客户端")

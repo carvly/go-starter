@@ -22,15 +22,15 @@ func RunCommand(ctx context.Context, cfg *config.Config, args []string, stdout, 
 		_, _ = fmt.Fprintln(stderr, "api: load module config:", err)
 		return cli.ExitError
 	}
-	log := logger.New(cfg.LogLevel, stderr)
+	log := logger.New(cfg.LogLevel, stderr, logger.Process("api", cfg.InstanceID)...)
 	slog.SetDefault(log)
 
 	in, err := NewInfra(ctx, cfg, log)
 	if err != nil {
-		log.Error("build infra", "error", err)
+		log.ErrorContext(ctx, "build infra", "error", err)
 		return cli.ExitError
 	}
-	defer in.Close()
+	defer in.Close(ctx)
 
 	return cli.Run(ctx, "api", commands(buildModules(in, configs)), args, stdout, stderr)
 }

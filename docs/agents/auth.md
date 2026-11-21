@@ -35,8 +35,8 @@
 
 由配置切换：`USER_TRUSTED_IDENTITY_HEADER` 留空用会话中间件，填上网关透传的 header 名（如
 `X-User-ID`）用信任 header 模式，选择逻辑在 `internal/modules/user/module.go` 的 `Middleware()`。两种实现都把
-身份写进 `httpserver.SetUserSession`，handler 用 `httpserver.UserSessionFrom(c)` 读，
-不需要跟着改。
+身份写进 `httpserver.SetUserSession`（它同时把 `user_id` 写进日志关联字段），handler 用
+`httpserver.UserSessionFrom(c)` 读，不需要跟着改。
 
 ## 给操作加鉴权
 

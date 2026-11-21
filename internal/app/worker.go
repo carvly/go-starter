@@ -18,17 +18,17 @@ func RunWorker(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 	if err != nil {
 		return err
 	}
-	logger.Info("starting worker", "config", configs.Redacted(cfg))
+	logger.InfoContext(ctx, "starting worker", "config", configs.Redacted(cfg))
 	in, err := NewInfra(ctx, cfg, logger)
 	if err != nil {
 		return err
 	}
-	defer in.Close()
+	defer in.Close(ctx)
 
 	mods := buildModules(in, configs)
 	workers := newWorkers(mods)
 	queue.WarnOrphans(ctx, in.Pool, workers.Kinds(), logger)
-	workClient, err := queue.NewClient(in.Pool, workers, periodicJobs(mods))
+	workClient, err := queue.NewClient(in.Pool, workers, periodicJobs(mods), logger)
 	if err != nil {
 		return fmt.Errorf("app: build queue worker client: %w", err)
 	}

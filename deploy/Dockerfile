@@ -37,13 +37,17 @@ RUN go mod download
 
 COPY . .
 
+# 日志的 version 字段：docker build --build-arg VERSION=v1.2.3。这里的构建不带 VCS 信息，不传时是 dev。
+ARG VERSION=""
+ENV LDFLAGS="-X app.local/internal/platform/buildinfo.version=${VERSION}"
+
 # CGO_ENABLED=0 产出静态二进制，配合 distroless/static 使用
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /out/worker ./cmd/worker
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags "$LDFLAGS" -o /out/worker ./cmd/worker
 
 FROM builder AS api-builder
 
 COPY --from=web /web/dist/ web/admin/dist/
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /out/api ./cmd/api
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags "$LDFLAGS" -o /out/api ./cmd/api
 
 # ---- api 镜像 ----
 FROM gcr.io/distroless/static-debian13:nonroot AS api
