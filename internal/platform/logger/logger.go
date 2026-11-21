@@ -15,9 +15,13 @@ import (
 // New 构造进程的根 logger：JSON 输出，attrs 是每条记录都带的静态字段（见 Process），
 // 并从 ctx 补上关联字段。进程里其它 logger（slog.Default、Echo、river）都应由它派生，
 // 否则拿不到关联字段。level 不识别时回落到 info：日志级别配错不应该让服务启动失败。
+// w 是 systemd 接到 journald 的流时，每行带上级别前缀（见 priorityWriter）。
 func New(level string, w io.Writer, attrs ...slog.Attr) *slog.Logger {
 	if w == nil {
 		w = os.Stdout
+	}
+	if toJournal(w) {
+		w = priorityWriter{w: w}
 	}
 	inner := slog.NewJSONHandler(w, &slog.HandlerOptions{Level: parseLevel(level)})
 	return slog.New(&contextHandler{inner: inner}).With(attrsToArgs(attrs)...)

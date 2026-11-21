@@ -68,9 +68,10 @@ func TestWorkMiddleware_AddsJobFieldsAndRequestID(t *testing.T) {
 		job  rivertype.JobRow
 		want string
 	}{
-		{"metadata 优先", rivertype.JobRow{Metadata: []byte(`{"request_id":"from-meta"}`), EncodedArgs: []byte(`{"request_id":"from-args"}`)}, "from-meta"},
-		{"回退到任务参数", rivertype.JobRow{Metadata: []byte(`{}`), EncodedArgs: []byte(`{"request_id":"from-args"}`)}, "from-args"},
-		{"都没有", rivertype.JobRow{Metadata: []byte(`{}`), EncodedArgs: []byte(`{"user_id":"u"}`)}, ""},
+		{"来自 metadata", rivertype.JobRow{Metadata: []byte(`{"request_id":"from-meta"}`)}, "from-meta"},
+		// 任务参数是业务数据，不是关联字段的来源。
+		{"不读任务参数", rivertype.JobRow{Metadata: []byte(`{}`), EncodedArgs: []byte(`{"request_id":"from-args"}`)}, ""},
+		{"没有 metadata", rivertype.JobRow{}, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -169,6 +170,10 @@ func TestWorkMiddleware_LogsPanicAndRepanics(t *testing.T) {
 		if rec["level"] != "ERROR" || rec["msg"] != "queue: job panicked" || rec["panic"] != "boom" ||
 			rec["request_id"] != "rid-1" || rec["job_kind"] != "user_deleted" {
 			t.Errorf("panic 日志：%v", rec)
+		}
+		// 堆栈要能定位到 panic 的位置，即任务函数本身。
+		if stack, _ := rec["stack"].(string); !strings.Contains(stack, "TestWorkMiddleware_LogsPanicAndRepanics") {
+			t.Errorf("stack 应包含 panic 所在的函数：%q", stack)
 		}
 	}()
 	_ = (&workMiddleware{log: logger.New("info", &buf)}).Work(t.Context(), &job, func(context.Context) error {

@@ -9,6 +9,7 @@ import (
 
 	"github.com/labstack/echo/v5"
 
+	"app.local/internal/kit/logctx"
 	staff "app.local/internal/modules/staff/domain"
 	"app.local/internal/platform/httpserver"
 )
@@ -117,7 +118,7 @@ func audit(c *echo.Context, svc *staff.Service, staffID, action string, handlerE
 		Target:    target,
 		Result:    strconv.Itoa(status),
 		IP:        c.RealIP(),
-		RequestID: c.Response().Header().Get(echo.HeaderXRequestID),
+		RequestID: logctx.RequestID(ctx),
 	})
 	if err != nil {
 		c.Logger().ErrorContext(ctx, "staff: record audit failed", "action", action, "error", err)

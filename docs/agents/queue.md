@@ -28,8 +28,7 @@ river 不做逐任务的心跳续租：`Work` 的 ctx 在任务超时后取消�
 - JSON 字段名同样是存量任务的格式：只能新增可选字段，不能改名或删除。
 - 日志关联字段由 `internal/platform/queue` 的中间件统一处理，事件和 worker 都不用管：入队时把请求的
   request_id 写进任务 metadata，执行时在 ctx 里写入 `job_kind`、`job_id`、`attempt` 和 request_id，任务返回的错误和 panic 也由它
-  用这个 ctx 记录（见 [observability.md](observability.md) 的"每条日志都带的字段"和"写法"）。新事件不声明 request_id 字段；
-  `UserDeleted` 已发布的 `RequestID` 字段按上一条保留，只作为旧任务的回退来源。
+  用这个 ctx 记录（见 [observability.md](observability.md) 的"每条日志都带的字段"和"写法"）。事件不声明 request_id 字段。
 
 ## 发布
 

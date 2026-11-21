@@ -34,9 +34,8 @@
   （`deploy/Dockerfile` 的 `VERSION` 构建参数，镜像构建不传时是 `dev`）；没注入时取 Go 嵌入的 VCS 提交前 12 位
   （本地在仓库里 `go build` 时有，有未提交改动加 `-dirty`），都没有时是 `dev`；
 - 同一台机器上跑同一服务的多个实例时，必须分别设置 `INSTANCE_ID`，否则 `instance` 相同；
-- 跨进程传播：入队时队列中间件把 `logctx.RequestID(ctx)` 写进任务 metadata 的 `request_id`；执行时先读
-  metadata，没有再读任务参数顶层的 `request_id` 字段（metadata 机制之前入队的任务）。新事件不需要声明
-  request_id 字段；
+- 跨进程传播：入队时队列中间件把 `logctx.RequestID(ctx)` 写进任务 metadata 的 `request_id`，执行时从
+  metadata 读回；事件不声明 request_id 字段；
 - 不用 `slog` 的 `WithGroup`：分组之后，关联字段会落进分组里，按顶层字段检索不到。
 - **脱敏**：不把密码、token、`Authorization` header 整体写进日志，只记 user_id、长度
   这类不构成凭据的信息；
@@ -62,9 +61,11 @@
   `"queue: ..."`），**变量一律放字段，不拼进 msg**：同一类事件的 msg 完全相同，才能按 msg 聚合、
   计数和精确检索；
 - 字段名用 snake_case，同一个含义全项目只用一个名字：上表的字段由入口写入，不手写；事件里常用的有
-  `error`（直接传 error 值）、`panic`（recover 到的值）、实体 ID（`<实体>_id`）；新增常用字段时先搜一遍已有叫法；
+  `error`（直接传 error 值）、`panic`（recover 到的值）、`stack`（panic 所在 goroutine 的堆栈，单独成字段，不拼进
+  `error`）、实体 ID（`<实体>_id`）；新增常用字段时先搜一遍已有叫法；
 - 一个错误只记一次：能返回就返回，由处理它的那一层记录。HTTP 请求返回的错误由错误处理器统一记录
-  （`"http request failed"`，带 `status`、`code`、`error`，业务错误另带 `error_kind`），handler 和 Service 不再重复记；
+  （`"http request failed"`，带 `status`、`code`、`error`，业务错误另带 `error_kind`，panic 另带 `stack`；级别按状态码，
+  见下面"级别"），handler 和 Service 不再重复记；
   worker 返回的错误和 panic 由队列执行中间件用任务 ctx 记录（带 `request_id`、`attempt`：river 自己的
   `Job errored`/`Job panicked` 日志带不上它们）——还会重试记 Warn（`"queue: job failed, will retry"`），
   最后一次记 Error（`"queue: job failed, no retries left"`），`river.JobCancel` 记 Warn，`river.JobSnooze` 不记；
@@ -81,7 +82,8 @@
 | Info | 低频的状态变化和批处理结果 | 启动、监听端口、定时清理的删除条数 |
 | Debug | 排查细节，生产默认不开（`LOG_LEVEL`） | — |
 
-错误处理器目前对 4xx 也按 Error 记录，按级别统计错误时要结合 `status` 字段区分客户端错误。
+HTTP 错误处理器按状态码定级别（`internal/platform/httpserver/errors.go` 的 `levelOf`）：5xx 记 Error；401、403、429
+可能是攻击迹象，记 Warn；其余 4xx 是客户端的问题，记 Info。Error 级别因此只剩服务端故障，可以直接告警。
 
 ### 排查
 
@@ -91,12 +93,14 @@
 ```bash
 journalctl -u '<服务名>@*' -f                                     # 跟踪全部实例
 journalctl -u '<服务名>@*' -o cat --since -1h | jq -c 'select(.request_id=="<id>")'
-journalctl -u '<服务名>@*' -o cat --since -1h | jq -c 'select(.level=="ERROR")'
+journalctl -u '<服务名>@*' -p err --since -1h -o cat            # 只看 Error（-p warning 含 Warn）
 journalctl -u '<服务名>@*' -g '"user_id":"<id>"'                   # -g 按正则匹配日志内容
 journalctl -u '<服务名>@*' -o json | jq -r '[._SYSTEMD_UNIT, .MESSAGE] | @tsv'   # 带上来自哪个实例
 ```
 
-journald 把 stdout 的每一行都记为 info 优先级，`journalctl -p err` 过滤不出错误，级别用 jq 按 `.level` 过滤。
+`-p` 能用，是因为 `logger.New` 检测到输出就是 systemd 接到 journald 的那条流（`JOURNAL_STREAM` 与 stdout 的
+设备号:inode 相同）时，在每行前加 syslog 优先级前缀（Error `<3>`、Warn `<4>`、Info `<6>`、Debug `<7>`），journald 据此
+设置优先级并去掉前缀，`-o cat` 看到的仍是纯 JSON。终端、容器和被重定向的输出不加前缀。
 
 ## 指标
 

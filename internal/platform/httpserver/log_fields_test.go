@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/labstack/echo/v5"
 
 	"app.local/internal/config"
+	"app.local/internal/kit/errs"
 	"app.local/internal/kit/logctx"
 	"app.local/internal/platform/httpserver"
 	"app.local/internal/platform/logger"
@@ -137,5 +139,65 @@ func TestAdmin_StaffIDInLogs(t *testing.T) {
 	recs := parseLogLines(t, &buf)
 	if len(recs) != 1 || recs[0]["staff_id"] != "s-1" || recs[0]["route"] != httpserver.AdminAPIPrefix+"/things/:id" {
 		t.Errorf("records = %v", recs)
+	}
+}
+
+// Error 级别只留给服务端故障：客户端错误不能把它淹没，鉴权、越权和限流记 Warn 便于发现攻击。
+func TestServer_ErrorLogLevelFollowsStatus(t *testing.T) {
+	var buf bytes.Buffer
+	kinds := map[string]errs.Kind{
+		"invalid": errs.KindInvalid, "unauthorized": errs.KindUnauthorized, "forbidden": errs.KindForbidden,
+		"not_found": errs.KindNotFound, "too_many": errs.KindTooManyRequests, "internal": errs.KindInternal,
+	}
+	e, err := httpserver.New(httpserver.Deps{
+		Logger: logger.New("debug", &buf),
+		HTTP: config.HTTPConfig{
+			BodyLimitBytes: 1 << 20, RequestTimeout: 5 * time.Second, GlobalRateLimitPerSecond: 1000,
+		},
+		CORS: config.CORSConfig{AllowOrigins: []string{"https://example.com"}},
+		Routes: []func(*echo.Group){func(g *echo.Group) {
+			g.GET("/fail/:kind", func(c *echo.Context) error {
+				return errs.New(kinds[c.Param("kind")], "x", "x")
+			})
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := map[string]string{
+		"invalid": "INFO", "not_found": "INFO",
+		"unauthorized": "WARN", "forbidden": "WARN", "too_many": "WARN",
+		"internal": "ERROR",
+	}
+	for kind, level := range want {
+		buf.Reset()
+		get(e, "/v1/fail/"+kind)
+		recs := parseLogLines(t, &buf)
+		if len(recs) != 1 || recs[0]["level"] != level {
+			t.Errorf("%s: 日志 = %v, want 一条 %s", kind, recs, level)
+		}
+	}
+}
+
+// panic 的堆栈是单独的字段：error 里只有 panic 内容，堆栈只含出问题的 goroutine。
+func TestServer_PanicStackIsSeparateField(t *testing.T) {
+	var buf bytes.Buffer
+	e := newTestServer(t, logger.New("info", &buf), false)
+
+	get(e, "/v1/widgets/panic")
+
+	recs := parseLogLines(t, &buf)
+	if len(recs) != 1 {
+		t.Fatalf("records = %v", recs)
+	}
+	rec := recs[0]
+	errMsg, _ := rec["error"].(string)
+	stack, _ := rec["stack"].(string)
+	if rec["level"] != "ERROR" || !strings.Contains(errMsg, "boom") || strings.Contains(errMsg, "goroutine") {
+		t.Errorf("error 应只有 panic 内容：%v", rec)
+	}
+	if !strings.Contains(stack, "panic") || len(regexp.MustCompile(`(?m)^goroutine \d+`).FindAllString(stack, -1)) != 1 {
+		t.Errorf("stack 应只含 panic 所在的 goroutine：%s", stack)
 	}
 }

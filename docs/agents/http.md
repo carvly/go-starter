@@ -136,7 +136,8 @@ Prometheus 指标 → Timeout（`internal/platform/httpserver/server.go` 的 `ne
 - Recover 必须在最外层：Echo v5 自己不恢复 panic，没有 Recover 时靠 net/http 在连接级
   兜底——连接直接断开、客户端拿不到响应，panic 只进 `http.Server.ErrorLog`（Echo 把它接到了
   应用日志，但不带 request_id，也不经过错误处理器）。Recover 让 panic 渲染成固定文案的
-  500，panic 内容带着 request_id 进结构化日志。Timeout 用的是 `ContextTimeout`，不另起
+  500，panic 内容带着 request_id 进结构化日志，堆栈是单独的 `stack` 字段（只取 panic 所在的 goroutine：Echo 默认取全部
+  goroutine 并截断到 4KB，出问题的那段常被挤掉）。Timeout 用的是 `ContextTimeout`，不另起
   goroutine，handler 里的 panic 仍在 Recover 的调用栈上；
 - CORS 必须在限流前面，否则预检请求会被拦。前台 CORS 开了 `AllowCredentials: true`
   （refresh token 按 Origin 经 cookie 交付，见 [user.md](../../internal/modules/user/docs/user.md) 的"会话"），所以 `AllowOrigins`

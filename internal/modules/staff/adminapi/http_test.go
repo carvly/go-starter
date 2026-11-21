@@ -337,3 +337,25 @@ func TestListAccounts_IncludesRoleIDs(t *testing.T) {
 		t.Errorf("root 的 role_ids = %#v, want 空数组（不是 null）", got["root"])
 	}
 }
+
+// 操作日志的 request_id 与请求日志的 request_id 是同一个值（网关传入即沿用）。
+func TestAudit_RecordsRequestID(t *testing.T) {
+	s := newServer(t)
+	_, cookie := s.createActive(t, "root", true)
+	before := len(s.repo.Audit())
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/v1/auth/login", strings.NewReader(`{"username":"root","password":"wrong"}`))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	req.Header.Set(echo.HeaderXRequestID, "rid-login")
+	s.e.ServeHTTP(httptest.NewRecorder(), req)
+
+	req = httptest.NewRequest(http.MethodPost, "/admin/v1/auth/logout", nil)
+	req.AddCookie(&http.Cookie{Name: adminapi.SessionCookie, Value: cookie})
+	req.Header.Set(echo.HeaderXRequestID, "rid-write")
+	s.e.ServeHTTP(httptest.NewRecorder(), req)
+
+	got := s.repo.Audit()[before:]
+	if len(got) != 2 || got[0].RequestID != "rid-login" || got[1].RequestID != "rid-write" {
+		t.Errorf("操作日志 = %+v, want request_id 依次为 rid-login、rid-write", got)
+	}
+}

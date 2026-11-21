@@ -7,6 +7,7 @@ import (
 
 	"github.com/labstack/echo/v5"
 
+	"app.local/internal/kit/logctx"
 	"app.local/internal/modules/staff/adminapi/oapi"
 	staff "app.local/internal/modules/staff/domain"
 	"app.local/internal/platform/httpserver"
@@ -64,7 +65,7 @@ func (h *Handler) StaffLogin(c *echo.Context) error {
 		Password:  req.Password,
 		IP:        c.RealIP(),
 		UserAgent: c.Request().UserAgent(),
-		RequestID: c.Response().Header().Get(echo.HeaderXRequestID),
+		RequestID: logctx.RequestID(c.Request().Context()),
 	})
 	if err != nil {
 		return err

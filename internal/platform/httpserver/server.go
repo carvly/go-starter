@@ -121,7 +121,8 @@ func newServer(d common) (*echo.Echo, *prometheus.Registry, error) {
 		e.IPExtractor = echo.ExtractIPDirect()
 	}
 
-	e.Use(middleware.Recover())
+	// 只取 panic 所在 goroutine 的堆栈：默认取全部 goroutine 并截断到 4KB，出问题的那段常被挤掉。
+	e.Use(middleware.RecoverWithConfig(middleware.RecoverConfig{DisableStackAll: true, StackSize: 16 << 10}))
 
 	// 请求的关联字段在这里写进 ctx：Echo 先匹配路由再执行 Use 链，c.Path() 已是路由模板；
 	// 没匹配上路由时为空，不用原始路径代替（扫描器的乱扫路径不进日志字段）。

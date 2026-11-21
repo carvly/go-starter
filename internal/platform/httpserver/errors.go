@@ -3,11 +3,13 @@ package httpserver
 import (
 	"cmp"
 	"errors"
+	"log/slog"
 	"math"
 	"net/http"
 	"strconv"
 
 	"github.com/labstack/echo/v5"
+	"github.com/labstack/echo/v5/middleware"
 
 	"app.local/internal/kit/errs"
 )
@@ -79,11 +81,16 @@ func newHTTPErrorHandler() echo.HTTPErrorHandler {
 
 		status, body := describe(err)
 
-		attrs := []any{"status", status, "code", body.Code, "error", err}
+		attrs := []any{"status", status, "code", body.Code}
+		if pe, ok := errors.AsType[*middleware.PanicStackError](err); ok {
+			attrs = append(attrs, "error", pe.Err, "stack", string(pe.Stack))
+		} else {
+			attrs = append(attrs, "error", err)
+		}
 		if be, ok := errs.As(err); ok {
 			attrs = append(attrs, "error_kind", be.Kind.String())
 		}
-		logger.ErrorContext(c.Request().Context(), "http request failed", attrs...)
+		logger.Log(c.Request().Context(), levelOf(status), "http request failed", attrs...)
 
 		if body.RetryAfter > 0 {
 			c.Response().Header().Set("Retry-After", strconv.Itoa(body.RetryAfter))
@@ -97,5 +104,18 @@ func newHTTPErrorHandler() echo.HTTPErrorHandler {
 		if writeErr != nil {
 			logger.ErrorContext(c.Request().Context(), "failed to write error response", "error", writeErr)
 		}
+	}
+}
+
+// levelOf 让 Error 级别只留给服务端故障：4xx 是客户端的问题，其中鉴权失败、越权和触发限流
+// 可能是攻击迹象，记 Warn；其余记 Info。
+func levelOf(status int) slog.Level {
+	switch {
+	case status >= http.StatusInternalServerError:
+		return slog.LevelError
+	case status == http.StatusUnauthorized, status == http.StatusForbidden, status == http.StatusTooManyRequests:
+		return slog.LevelWarn
+	default:
+		return slog.LevelInfo
 	}
 }

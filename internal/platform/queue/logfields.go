@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"runtime/debug"
 
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
@@ -73,7 +74,7 @@ func (m *workMiddleware) Work(ctx context.Context, job *rivertype.JobRow, doInne
 	}
 	defer func() {
 		if r := recover(); r != nil {
-			m.log.ErrorContext(ctx, "queue: job panicked", "panic", r)
+			m.log.ErrorContext(ctx, "queue: job panicked", "panic", r, "stack", string(debug.Stack()))
 			// 继续抛给 river：由它记录堆栈、按失败处理和重试。
 			panic(r)
 		}
@@ -100,16 +101,12 @@ func (m *workMiddleware) logFailure(ctx context.Context, job *rivertype.JobRow, 
 	}
 }
 
-// requestIDOf 先读 metadata；没有时读任务参数顶层的 request_id 字段：在 metadata 机制之前
-// 入队的任务（以及仍按事件契约携带该字段的事件）靠它关联。
 func requestIDOf(job *rivertype.JobRow) string {
-	for _, raw := range [][]byte{job.Metadata, job.EncodedArgs} {
-		var v struct {
-			RequestID string `json:"request_id"`
-		}
-		if len(raw) > 0 && json.Unmarshal(raw, &v) == nil && v.RequestID != "" {
-			return v.RequestID
-		}
+	var v struct {
+		RequestID string `json:"request_id"`
+	}
+	if len(job.Metadata) > 0 && json.Unmarshal(job.Metadata, &v) == nil {
+		return v.RequestID
 	}
 	return ""
 }
