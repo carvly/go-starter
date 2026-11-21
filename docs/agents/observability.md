@@ -59,8 +59,8 @@
   没有请求的路径也传进程的 ctx；
 - `msg` 是固定的英文短语，形如 `"<模块或包>: <发生了什么>"`（`"user: user_deleted processed"`、
   `"queue: ..."`），**变量一律放字段，不拼进 msg**：同一类事件的 msg 完全相同，才能按 msg 聚合、
-  计数和精确检索；
-- 字段名用 snake_case，同一个含义全项目只用一个名字：上表的字段由入口写入，不手写；事件里常用的有
+  计数和精确检索（`sloglint` 的 `static-msg` 检查）；
+- 字段名用 snake_case（`sloglint` 的 `key-naming-case` 检查），同一个含义全项目只用一个名字：上表的字段由入口写入，不手写；事件里常用的有
   `error`（直接传 error 值）、`panic`（recover 到的值）、`stack`（panic 所在 goroutine 的堆栈，单独成字段，不拼进
   `error`）、实体 ID（`<实体>_id`）；新增常用字段时先搜一遍已有叫法；
 - 一个错误只记一次：能返回就返回，由处理它的那一层记录。HTTP 请求返回的错误由错误处理器统一记录

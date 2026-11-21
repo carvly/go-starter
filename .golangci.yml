@@ -23,8 +23,11 @@ linters:
       require-explanation: true
     # 日志关联字段（request_id、user_id、任务 kind 等）存在 ctx 里，由根 Handler 输出时补上；
     # 不带 ctx 的 Info/Error 会悄悄丢掉它们，所以一律用 InfoContext/ErrorContext。
+    # msg 是固定短语、字段名是 snake_case，才能按 msg 聚合、按字段名检索（见 docs/agents/observability.md）。
     sloglint:
       context: all
+      static-msg: true
+      key-naming-case: snake
 
 formatters:
   enable:
