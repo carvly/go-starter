@@ -29,8 +29,8 @@ make run-api      # 另开一个终端
 make run-worker
 ```
 
-跑起来之后，浏览器打开 `http://localhost:8080/docs` 看 Redoc 版 API 文档；
-`HTTP_API_DOCS_ENABLED=false` 可以整体关掉这组只读文档路由。
+跑起来之后，浏览器打开 `http://localhost:8080/docs` 看 Redoc 版 API 文档。文档路由默认关闭，
+`.env.example` 和 docker-compose 为本地开发打开了（`HTTP_API_DOCS_ENABLED=true`）。
 
 compose 栈里的后台在 `http://localhost:8081`，先创建首个超级管理员，用输出的临时密码登录：
 

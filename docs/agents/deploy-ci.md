@@ -48,14 +48,25 @@
   排除本地的 `web/admin/node_modules`、`dist`。构建参数 `VERSION`（如 `--build-arg VERSION=v1.2.3`）
   经 `-ldflags` 注入日志和 `service_info` 的 `service_version`。镜像里的构建不带 VCS 信息，不传时是 `dev`，
   发布构建必须传；
+- **网关只转发业务路径**。`/healthz`、`/readyz`、`/metrics` 不需要登录，经网关转发会暴露版本号、主机名、运行时信息
+  和依赖是否可用；探活、发布脚本、指标采集在内网直接访问端口。前台按白名单只转发 `/v1/`，其余返回 404；后台前端是
+  单页应用，`/` 必须转发；后台端口上 `/admin/v1` 之外的根路径只有前端页面、`/healthz`、`/metrics`、`/docs`、
+  `/admin.yaml`，网关按精确匹配拦掉 `/healthz`、`/metrics`，生产环境再拦文档。后台端口新增根路径时同步这里和网关配置
+  （`TestAdmin_RoutesOutsideAPIPrefix` 会提醒）。网关不按来源 IP 限制：`/admin/v1` 靠员工会话和逐操作
+  授权保护（见 [staff.md](../../internal/modules/staff/docs/staff.md)），前端页面只是构建产物；
+- **文档按环境开关**（`HTTP_API_DOCS_ENABLED`，默认 `false`）：
+  - 测试环境打开并**公开转发**（前台 `/docs`、`/openapi.yaml`，后台 `/docs`、`/admin.yaml`），不加认证。前端开发直接打开
+    `/docs`，AI 直接取 spec 原文；内容就是测试环境当前部署的版本。spec 不是安全边界，见 [http.md](http.md) 的"API 文档"；
+  - 生产环境关闭，网关也不转发这几条路径（前台白名单本来就不含，后台按精确匹配拦掉）；上线的版本先在测试环境跑过，
+    看测试环境的文档；
 - `deploy/docker-compose.yml`：postgres → `migrate`（执行 `api migrate up`，只需 `DB_DSN`）→
   api / worker，长期运行的 service 都声明了资源上限。api/worker 不会自己建表；
 - api 进程可以同时跑后台 server：配置 `HTTP_ADMIN_ADDR`（为空不启动）和
-  `HTTP_ADMIN_ORIGIN`（后台前端的 origin，配置了地址时必填）。后台地址建议只绑内网或
-  localhost，不发布到公网入口；它和前台共用数据库连接池，连接数上限按两者合计规划。后台前端用
-  自己的主机名：cookie 不按端口隔离，和前台同主机不同端口时，后台会话 cookie 也会被发到前台 server。
-  后台端口上的 `/metrics`、`/docs`、`/admin.yaml` 不需要登录：反代给员工访问时只转发
-  `/admin/v1` 和前端页面，生产环境用 `HTTP_API_DOCS_ENABLED=false` 关掉文档。首个超级管理员
+  `HTTP_ADMIN_ORIGIN`（后台前端的 origin，配置了地址时必填）。前台和后台端口都只绑
+  localhost 或内网，由网关对外；它和前台共用数据库连接池，连接数上限按两者合计规划。后台必须用独立域名
+  （如 `admin.example.com`，前台是 `api.example.com`），后台前端页面和 `/admin/v1` 都在这个域名下、同源：
+  cookie 不按端口和路径隔离，和前台同一个主机名时，后台会话 cookie 也会被发到前台 server。
+  首个超级管理员
   用 `docker compose run --rm api staff create -username root` 创建（见 `internal/modules/staff/docs/staff.md`），
   会话和日志参数是 `STAFF_*` 环境变量。前台用户的登录会话和微信凭据是 `AUTH_*` /
   `WECHAT_*` 环境变量（见 `internal/modules/user/docs/user.md` 和 `configs/.env.example`）。其中

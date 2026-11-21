@@ -3,6 +3,7 @@ package httpserver_test
 import (
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -69,6 +70,31 @@ func TestAdmin_RoutesUnderAdminPrefixOnly(t *testing.T) {
 	}
 	if rec := get(e, "/healthz"); rec.Code != http.StatusOK {
 		t.Errorf("/healthz = %d, want 200", rec.Code)
+	}
+}
+
+// 后台网关只能用 location / 转发（前端是单页应用），不需要登录的根路径靠网关逐条拦截。
+// 这里列出 /admin/v1 之外的全部路由：新增一条，网关就要同步处理。
+func TestAdmin_RoutesOutsideAPIPrefix(t *testing.T) {
+	e := newAdminServer(t, httpserver.AdminDeps{Static: fstest.MapFS{"index.html": {Data: []byte("<html/>")}}})
+	want := []string{
+		"GET /*", "HEAD /*", // 前端页面，网关转发
+		"GET /healthz", "GET /metrics", // 网关拦截
+		"GET /docs", "GET /admin.yaml", // 测试环境转发，生产环境关闭且网关拦截
+	}
+	var got []string
+	for _, r := range e.Router().Routes() {
+		if r.Path == httpserver.AdminAPIPrefix || strings.HasPrefix(r.Path, httpserver.AdminAPIPrefix+"/") {
+			continue
+		}
+		got = append(got, r.Method+" "+r.Path)
+	}
+	slices.Sort(got)
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Errorf("后台端口在 %s 之外的路由 = %v, want %v\n"+
+			"新增的根路径会被网关的 location / 转发出去：不需要登录的，在 docs/agents/deploy-ci.md 的"+
+			"\"网关只转发业务路径\"里补上拦截，再更新这份清单", httpserver.AdminAPIPrefix, got, want)
 	}
 }
 

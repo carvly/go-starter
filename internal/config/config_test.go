@@ -68,7 +68,7 @@ func TestLoad_DefaultsAndRequiredFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.HTTP.Addr != ":8080" || cfg.HTTP.BodyLimitBytes != 2*1024*1024 || !cfg.HTTP.APIDocsEnabled {
+	if cfg.HTTP.Addr != ":8080" || cfg.HTTP.BodyLimitBytes != 2*1024*1024 || cfg.HTTP.APIDocsEnabled {
 		t.Errorf("HTTP defaults = %+v", cfg.HTTP)
 	}
 	if cfg.DB.MinConns != 2 || cfg.DB.MaxConns != 25 {
@@ -203,11 +203,11 @@ func TestLoad_AdminServer(t *testing.T) {
 	})
 }
 
-func TestLoad_APIDocsEnabled_CanBeDisabledByEnv(t *testing.T) {
+func TestLoad_APIDocsEnabled_CanBeEnabledByEnv(t *testing.T) {
 	setRequiredEnv(t)
-	t.Setenv("HTTP_API_DOCS_ENABLED", "false")
+	t.Setenv("HTTP_API_DOCS_ENABLED", "true")
 	cfg, err := config.Load()
-	if err != nil || cfg.HTTP.APIDocsEnabled {
+	if err != nil || !cfg.HTTP.APIDocsEnabled {
 		t.Fatalf("APIDocsEnabled = %v, err = %v", cfg.HTTP.APIDocsEnabled, err)
 	}
 }

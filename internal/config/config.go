@@ -66,9 +66,9 @@ type HTTPConfig struct {
 	// AdminAddr 时必填：后台会话用 cookie，写请求的 Origin 必须等于它。
 	AdminOrigin string `yaml:"admin_origin"`
 
-	// APIDocsEnabled 控制要不要挂 GET /openapi.yaml 和 /docs（Redoc）这组只读
-	// 文档路由，默认打开（本地开发/演示环境方便直接打开浏览器看接口）；生产
-	// 环境如果不想对外暴露，配置成 false 即可。
+	// APIDocsEnabled 控制要不要挂 /docs（Redoc）和 spec 原文（前台 /openapi.yaml、后台 /admin.yaml）
+	// 这组只读文档路由。默认关闭，漏配时不会意外挂出文档；本地开发（.env.example、docker-compose）
+	// 和测试环境显式打开，生产环境保持关闭（见 docs/agents/deploy-ci.md）。
 	APIDocsEnabled bool `yaml:"api_docs_enabled"`
 }
 
@@ -174,7 +174,7 @@ func defaults() *Config {
 			TrustedProxy:             false,
 			GlobalRateLimitPerSecond: 20,
 			InternalAddr:             ":9090",
-			APIDocsEnabled:           true,
+			APIDocsEnabled:           false,
 		},
 		DB: DBConfig{
 			MinConns:          2,

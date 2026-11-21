@@ -183,7 +183,9 @@ Timeout（`internal/platform/httpserver/server.go` 的 `newServer`，前台和
 
 前台 server 的 `GET /openapi.yaml` 返回嵌入的 spec 原文（`api/embed.go`），`/docs` 是 Redoc
 渲染的文档页；后台 server 换成 `GET /admin.yaml` 和它自己的 `/docs`，两边只暴露各自的 spec。
-`HTTP_API_DOCS_ENABLED=false` 两边都不注册。
+`HTTP_API_DOCS_ENABLED` 默认 `false`，两边都不注册；本地开发和测试环境打开，生产环境关闭。测试环境的文档
+公开访问，不加认证：spec 不是安全边界，前台接口从客户端流量就能看到，后台前端（公开的构建产物）已含
+`admin.yaml` 生成的路径和字段，接口的保护靠鉴权（见 [deploy-ci.md](deploy-ci.md) 的"网关只转发业务路径"）。
 
 - 文档 UI 只有 Redoc 一个。曾经并存过 Swagger UI（echo-swagger），但 swaggo/files
   上游最新版停在 v2.0.2（2024-12，捆绑 swagger-ui 5.18.2），而 swagger-ui 到

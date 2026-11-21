@@ -97,6 +97,8 @@ services:
       APP_ENV: development
       LOG_LEVEL: info
       HTTP_ADDR: :8080
+      # 本地联调打开文档：http://localhost:8080/docs、http://localhost:8081/docs。
+      HTTP_API_DOCS_ENABLED: ${HTTP_API_DOCS_ENABLED:-true}
       CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-http://localhost:5173}
       DB_DSN: postgres://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD:-app}@postgres:5432/${POSTGRES_DB:-app}?sslmode=disable
       # DEV-ONLY 默认值，生产环境必须覆盖（见上面文件头的说明）。
@@ -105,8 +107,8 @@ services:
       <<: *user-env
       # 后台：页面和 /admin/v1 都在这个端口上，浏览器打开 http://localhost:8081。首个管理员用
       # `docker compose -f deploy/docker-compose.yml run --rm api staff create -username root` 创建。
-      # 只发布到宿主机的 127.0.0.1：后台不该暴露在公网入口上，远程访问经 HTTPS 反代，
-      # 生产环境把 HTTP_ADMIN_ORIGIN 改成反代后的 HTTPS 地址。
+      # 只发布到宿主机的 127.0.0.1：对外由网关以独立域名（如 admin.example.com）经 HTTPS 反代，
+      # 生产环境把 HTTP_ADMIN_ORIGIN 改成这个 HTTPS 地址。
       HTTP_ADMIN_ADDR: :8081
       HTTP_ADMIN_ORIGIN: ${HTTP_ADMIN_ORIGIN:-http://localhost:8081}
     ports:
