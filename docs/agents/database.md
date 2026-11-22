@@ -314,8 +314,9 @@
 集成测试用 `internal/platform/postgres/pgtest`：每个测试进程起一个 Postgres 容器
 （镜像与 `deploy/docker-compose.yml` 一致，`scripts/check-versions.sh` 检查）。调用方用
 `pgtest.New(t, <模块>.Migrations)` 声明来源；pgtest 总是先执行 platform 迁移，按来源集合缓存
-模板库，每个测试再克隆独立数据库。组合根的跨模块测试传 `migrationSources()`。集成测试文件都带
-`//go:build integration`。
+模板库，每个测试再克隆独立数据库。组合根的跨模块测试传 `migrationSources()`。迁移由被测子进程
+自己执行时（如 `tools/starter` 的升级测试跑 `migrate up`），用 `pgtest.EmptyDSN(t)` 取一个空库的
+连接串。不要在测试里另起容器。集成测试文件都带 `//go:build integration`。
 
 `make test-integration` 经 `scripts/test-integration.sh` 运行，Docker、Podman 和 socktainer
 （macOS 上把 Apple Container 包装成 Docker API）都能直接用：

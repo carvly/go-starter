@@ -3,14 +3,13 @@
 package main
 
 import (
-	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
+	"app.local/internal/platform/postgres/pgtest"
 )
 
 func setupUpgradeRepos(t *testing.T) (string, string) {
@@ -66,26 +65,6 @@ const upgradeChangelogFixture = `# 更新日志
 - 夹具：迁移后事项
 `
 
-func setupUpgradePostgres(t *testing.T) {
-	t.Helper()
-	ctx := context.Background()
-	container, err := tcpostgres.Run(ctx, "postgres:18-alpine",
-		tcpostgres.WithDatabase("app"),
-		tcpostgres.WithUsername("app"),
-		tcpostgres.WithPassword("app"),
-		tcpostgres.BasicWaitStrategies(),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = container.Terminate(ctx) })
-	dsn, err := container.ConnectionString(ctx, "sslmode=disable")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("DB_DSN", dsn)
-}
-
 func commitUpgradeFixture(t *testing.T, root, message, tag string) {
 	t.Helper()
 	for _, args := range [][]string{{"add", "-A"}, {"-c", "user.email=test@example.com", "-c", "user.name=test", "commit", "-qm", message}} {
@@ -104,9 +83,10 @@ func commitUpgradeFixture(t *testing.T, root, message, tag string) {
 	}
 }
 
-func runUpgradeMake(project, version string) (string, error) {
+func runUpgradeMake(project, dsn, version string) (string, error) {
 	cmd := exec.Command("make", "starter-upgrade", "VERSION="+version, "CONTINUE=1")
 	cmd.Dir = project
+	cmd.Env = append(os.Environ(), "DB_DSN="+dsn)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
@@ -114,14 +94,15 @@ func runUpgradeMake(project, version string) (string, error) {
 // 每个确认点只被它自己那一次 CONTINUE=1 确认：v0.1.0 的升级说明有"合并前""合并后迁移前""迁移后"三节，
 // 升级必须依次在这三处停下，各续跑一次后才完成。改动前一次 CONTINUE=1 会放行全部确认点。
 func TestUpgradeStopsAtEachConfirmationOnce(t *testing.T) {
+	t.Parallel()
 	_, project := setupUpgradeRepos(t)
-	setupUpgradePostgres(t)
+	dsn := pgtest.EmptyDSN(t)
 	statePath, err := gitPath(project, "starter-upgrade/state.json")
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{pointPrecheck, pointBeforeMigrate, pointAfterMigrate} {
-		out, err := runUpgradeMake(project, "v0.1.0")
+		out, err := runUpgradeMake(project, dsn, "v0.1.0")
 		if err != nil {
 			t.Fatalf("upgrade: %v\n%s", err, out)
 		}
@@ -133,7 +114,7 @@ func TestUpgradeStopsAtEachConfirmationOnce(t *testing.T) {
 			t.Fatalf("应停在 %q，实际 state = %+v\n%s", want, state, out)
 		}
 	}
-	out, err := runUpgradeMake(project, "v0.1.0")
+	out, err := runUpgradeMake(project, dsn, "v0.1.0")
 	if err != nil {
 		t.Fatalf("upgrade: %v\n%s", err, out)
 	}
@@ -147,8 +128,9 @@ func TestUpgradeStopsAtEachConfirmationOnce(t *testing.T) {
 }
 
 func TestUpgradeUsesTargetVersionTool(t *testing.T) {
+	t.Parallel()
 	root, project := setupUpgradeRepos(t)
-	setupUpgradePostgres(t)
+	dsn := pgtest.EmptyDSN(t)
 	path := filepath.Join(root, "tools/starter/upgrade.go")
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -162,7 +144,7 @@ func TestUpgradeUsesTargetVersionTool(t *testing.T) {
 		t.Fatal(err)
 	}
 	commitUpgradeFixture(t, root, "instrument target", "v0.2.0")
-	out, err := runUpgradeMake(project, "v0.2.0")
+	out, err := runUpgradeMake(project, dsn, "v0.2.0")
 	if err != nil {
 		t.Fatalf("upgrade: %v\n%s", err, out)
 	}
@@ -172,8 +154,9 @@ func TestUpgradeUsesTargetVersionTool(t *testing.T) {
 }
 
 func TestUpgradeSharedConflictContinues(t *testing.T) {
+	t.Parallel()
 	root, project := setupUpgradeRepos(t)
-	setupUpgradePostgres(t)
+	dsn := pgtest.EmptyDSN(t)
 	if err := run(project, "go", "run", "./tools/starter", "remove", "-removed", "user"); err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +193,7 @@ func TestUpgradeSharedConflictContinues(t *testing.T) {
 	}
 	commitUpgradeFixture(t, root, "extend user", "v0.2.0")
 
-	out, err := runUpgradeMake(project, "v0.2.0")
+	out, err := runUpgradeMake(project, dsn, "v0.2.0")
 	if err != nil {
 		t.Fatalf("expected conflict stop: %v\n%s", err, out)
 	}
@@ -224,7 +207,7 @@ func TestUpgradeSharedConflictContinues(t *testing.T) {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
 	}
-	out, err = runUpgradeMake(project, "v0.2.0")
+	out, err = runUpgradeMake(project, dsn, "v0.2.0")
 	if err != nil {
 		t.Fatalf("continue: %v\n%s", err, out)
 	}
@@ -248,8 +231,9 @@ func TestUpgradeSharedConflictContinues(t *testing.T) {
 
 // 一次升级完成并提交后，下一次升级到更新的版本要能直接开始，基线是上一次的目标。
 func TestUpgradeTwiceInSequence(t *testing.T) {
+	t.Parallel()
 	root, project := setupUpgradeRepos(t)
-	setupUpgradePostgres(t)
+	dsn := pgtest.EmptyDSN(t)
 	statePath, err := gitPath(project, "starter-upgrade/state.json")
 	if err != nil {
 		t.Fatal(err)
@@ -258,7 +242,7 @@ func TestUpgradeTwiceInSequence(t *testing.T) {
 		appendFile(t, filepath.Join(root, "docs/STARTER.md"), "\n"+version+"\n")
 		commitUpgradeFixture(t, root, "release "+version, version)
 
-		out, err := runUpgradeMake(project, version)
+		out, err := runUpgradeMake(project, dsn, version)
 		if err != nil {
 			t.Fatalf("upgrade %s: %v\n%s", version, err, out)
 		}
@@ -285,7 +269,7 @@ func TestUpgradeTwiceInSequence(t *testing.T) {
 }
 
 // upgradeUntilComplete 反复以 CONTINUE=1 执行，直到完成；每次都应以 0 退出（停下等待也是 0）。
-func upgradeUntilComplete(t *testing.T, project, version string) string {
+func upgradeUntilComplete(t *testing.T, project, dsn, version string) string {
 	t.Helper()
 	statePath, err := gitPath(project, "starter-upgrade/state.json")
 	if err != nil {
@@ -293,7 +277,7 @@ func upgradeUntilComplete(t *testing.T, project, version string) string {
 	}
 	var all strings.Builder
 	for range 6 {
-		out, err := runUpgradeMake(project, version)
+		out, err := runUpgradeMake(project, dsn, version)
 		all.WriteString(out)
 		if err != nil {
 			t.Fatalf("upgrade %s: %v\n%s", version, err, all.String())
@@ -321,8 +305,9 @@ func gitIn(t *testing.T, dir string, args ...string) {
 
 // 项目改过、合并时没有冲突的 starter 文件，升级后也要恢复为目标版本，和有冲突的文件一致。
 func TestUpgradeRestoresCleanlyMergedStarterFiles(t *testing.T) {
+	t.Parallel()
 	root, project := setupUpgradeRepos(t)
-	setupUpgradePostgres(t)
+	dsn := pgtest.EmptyDSN(t)
 	const file = "docs/STARTER.md"
 	path := filepath.Join(project, file)
 	data, err := os.ReadFile(path)
@@ -336,7 +321,7 @@ func TestUpgradeRestoresCleanlyMergedStarterFiles(t *testing.T) {
 	appendFile(t, filepath.Join(root, file), "\n目标版本追加\n")
 	commitUpgradeFixture(t, root, "release v0.2.0", "v0.2.0")
 
-	out := upgradeUntilComplete(t, project, "v0.2.0")
+	out := upgradeUntilComplete(t, project, dsn, "v0.2.0")
 	if differs, err := gitOutput(project, "diff", "--name-only", "v0.2.0", "--", file); err != nil {
 		t.Fatal(err)
 	} else if differs != "" {
@@ -349,8 +334,9 @@ func TestUpgradeRestoresCleanlyMergedStarterFiles(t *testing.T) {
 
 // 业务代码引用了目标版本删除的包时，升级停在"合并后迁移前"等待修改，而不是在 go mod tidy 处失败。
 func TestUpgradeStopsForCodeFixBeforeBuild(t *testing.T) {
+	t.Parallel()
 	root, project := setupUpgradeRepos(t)
-	setupUpgradePostgres(t)
+	dsn := pgtest.EmptyDSN(t)
 	legacy := filepath.Join(root, "internal/kit/legacyx/legacyx.go")
 	if err := os.MkdirAll(filepath.Dir(legacy), 0o755); err != nil {
 		t.Fatal(err)
@@ -376,7 +362,7 @@ func TestUpgradeStopsForCodeFixBeforeBuild(t *testing.T) {
 	appendFile(t, filepath.Join(root, "starter-changelog.md"), "\n## v0.3.0 — 2026-11-21\n\n### 升级说明\n\n#### 合并后迁移前\n\n- 夹具：legacyx 已删除，改掉引用\n")
 	commitUpgradeFixture(t, root, "remove legacyx", "v0.3.0")
 
-	out, err := runUpgradeMake(project, "v0.3.0")
+	out, err := runUpgradeMake(project, dsn, "v0.3.0")
 	if err != nil {
 		t.Fatalf("应停下等待修改而不是失败：%v\n%s", err, out)
 	}
@@ -397,7 +383,7 @@ func TestUpgradeStopsForCodeFixBeforeBuild(t *testing.T) {
 		}
 	}
 	gitIn(t, project, "rm", "-rq", "internal/projectx")
-	out = upgradeUntilComplete(t, project, "v0.3.0")
+	out = upgradeUntilComplete(t, project, dsn, "v0.3.0")
 	for _, want := range []string{"git diff --cached", "starter-upgrade-status: complete target=v0.3.0"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("输出缺少 %q：\n%s", want, out)
@@ -421,8 +407,9 @@ func appendFile(t *testing.T, path, text string) {
 
 // 共享 spec 里的 starter 操作被项目改过时，漂移提示要说明 spec 保留合并结果，不能说会恢复为目标版本。
 func TestUpgradeDriftMessageKeepsSpecMergeResult(t *testing.T) {
+	t.Parallel()
 	root, project := setupUpgradeRepos(t)
-	setupUpgradePostgres(t)
+	dsn := pgtest.EmptyDSN(t)
 	spec := filepath.Join(project, "api/openapi.yaml")
 	data, err := os.ReadFile(spec)
 	if err != nil {
@@ -436,7 +423,7 @@ func TestUpgradeDriftMessageKeepsSpecMergeResult(t *testing.T) {
 	appendFile(t, filepath.Join(root, "docs/STARTER.md"), "\n目标版本追加\n")
 	commitUpgradeFixture(t, root, "release v0.2.0", "v0.2.0")
 
-	out := upgradeUntilComplete(t, project, "v0.2.0")
+	out := upgradeUntilComplete(t, project, dsn, "v0.2.0")
 	for _, want := range []string{"spec 保留三方合并结果，不会恢复为目标版本", "starter operation changed"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("输出缺少 %q：\n%s", want, out)
@@ -456,8 +443,9 @@ func TestUpgradeDriftMessageKeepsSpecMergeResult(t *testing.T) {
 
 // 会重新生成的文件（派生代码、go.sum）冲突时不拦住升级：派生文件重新生成，go.sum 由 tidy 收口。
 func TestUpgradeResolvesRegeneratedConflicts(t *testing.T) {
+	t.Parallel()
 	root, project := setupUpgradeRepos(t)
-	setupUpgradePostgres(t)
+	dsn := pgtest.EmptyDSN(t)
 	const gen = "internal/modules/user/httpapi/oapi/api.gen.go"
 	for _, side := range []struct{ dir, name string }{{project, "project"}, {root, "target"}} {
 		appendFile(t, filepath.Join(side.dir, gen), "\n// "+side.name+" edit\n")
@@ -466,7 +454,7 @@ func TestUpgradeResolvesRegeneratedConflicts(t *testing.T) {
 	commitUpgradeFixture(t, project, "touch derived files", "")
 	commitUpgradeFixture(t, root, "release v0.2.0", "v0.2.0")
 
-	out := upgradeUntilComplete(t, project, "v0.2.0")
+	out := upgradeUntilComplete(t, project, dsn, "v0.2.0")
 	if strings.Contains(out, "point=conflict") {
 		t.Fatalf("派生文件和 go.sum 的冲突应自动处理：\n%s", out)
 	}
