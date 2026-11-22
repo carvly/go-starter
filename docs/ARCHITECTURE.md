@@ -202,7 +202,7 @@ testcontainers-go。显式构造函数注入，不用 wire/fx。
 | 后台前端：登录、强制改密、员工、角色、操作日志、个人设置，嵌入二进制 | 已实现（`web/admin/`）；TOTP、文件上传、任务面板等未实现，按需扩展 |
 | 定时任务、模块子命令 | 已实现（模块的 `PeriodicJobs()` / `Commands()`），staff 是第一个使用者 |
 | 集成测试（Repository 契约、dbtx、入队） | 已实现，需要 Docker |
-| 日志、Prometheus 指标、OpenTelemetry tracing（trace_id 统一请求 ID、HTTP/SQL/Redis/微信/river 插桩）、健康检查 | 已实现；连接池、队列积压指标未接入 |
+| 日志、Prometheus 指标、OpenTelemetry tracing（trace_id 贯穿网关、日志、trace，HTTP/SQL/Redis/微信/river 插桩）、健康检查 | 已实现；连接池、队列积压指标未接入 |
 | Docker 镜像、compose、CI、提交钩子、dependabot | 已实现；镜像漏洞扫描（trivy）未接入 |
 | 手写 outbox | 不实现，river 已覆盖（见"技术选型"） |
 | 外部消息队列 relay、跨服务 HTTP 调用封装、熔断 | 不预先实现，出现真实需求时再加 |

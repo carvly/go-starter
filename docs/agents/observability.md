@@ -45,7 +45,7 @@
 | 字段 | 含义 | 写入方 |
 |---|---|---|
 | `service_name`、`service_version`、`service_instance_id` | 哪个进程（`api`/`worker`）、哪个构建、哪个实例 | 根 logger 的静态字段（`process.Identity` 的 `LogAttrs`，见上面"命名约定"）；版本见下，实例是配置 `INSTANCE_ID`，默认主机名 |
-| `trace_id`、`span_id` | 全项目唯一的请求 ID：网关 access log、应用日志、trace、响应头 `X-Trace-Id`、后台操作日志同一个值；`span_id` 定位到 trace 里的哪一步。ctx 里没有 span（启动、关停）时不输出 | 根 logger 的 Handler 从 ctx 里的 span 取（见下面"tracing"），不经 `logctx` |
+| `trace_id`、`span_id` | 全项目唯一的请求标识，不另设其它名字的 ID：网关 access log、应用日志、trace、响应头 `X-Trace-Id`、后台操作日志同一个值；`span_id` 定位到 trace 里的哪一步。ctx 里没有 span（启动、关停）时不输出 | 根 logger 的 Handler 从 ctx 里的 span 取（见下面"tracing"），不经 `logctx` |
 | `link_trace_id` | 任务入队时所在 trace 的 `trace_id`：任务执行是一条新的 trace，经 span link 关联；trace 会被采样丢掉，日志不会，只有它能把任务和入队方连起来。请求里入队的是请求的 `trace_id`；worker 里入队的是上一个任务这次执行的 `trace_id`（顺着它的 `link_trace_id` 追到请求）；定时任务和请求之外入队的指向只有入队 span 的 trace，查不到其它日志 | 队列执行中间件，从任务 metadata 的 `traceparent` 解析 |
 | `method`、`route` | 属于哪个接口；`route` 是路由模板，没匹配上路由时不输出；`method` 的非标准方法归成 `_OTHER`，与指标标签同值 | 请求入口中间件（`internal/platform/httpserver/trace.go`） |
 | `user_id` / `staff_id` | 前台用户 / 后台员工 | `httpserver.SetUserSession` / `SetStaffSession`：两种鉴权都只经它们写入身份。没有登录态、但处理的是某个用户的路径（刷新令牌、注销任务）用 `logctx.WithUserID` 写进 ctx |
@@ -102,7 +102,7 @@
   最后一次记 Error（`"queue: job failed, no retries left"`），`river.JobCancel` 记 Warn，`river.JobSnooze` 不记；
   river 另把错误写进任务的 `errors` 列并按策略重试（查 `river_job` 表），worker 不再重复记；只有吞掉错误继续执行（降级、尽力而为的副作用）时才在原地记 Warn；
 - 不在每个请求上打 Info：应用不记访问日志，请求量、耗时、状态码分布看指标，单个请求看网关的访问日志
-  （按 `trace_id` 关联：网关的 `$request_id` 经 `X-Trace-Id` 传给应用，就是这次请求的 `trace_id`）。
+  （按 `trace_id` 关联：网关生成的 `$trace_id` 经 `X-Trace-Id` 传给应用，就是这次请求的 `trace_id`）。
 
 ### 级别
 
@@ -190,11 +190,11 @@ http_server_request_duration_seconds{server, method, route, status}
   的尾部采样控制。其余 `OTEL_EXPORTER_OTLP_*`（headers、超时）由 exporter 直接读环境变量；
 - resource 只来自 `process.Identity`（`service.name`、`service.version`、`service.instance.id`），与日志、指标同一来源，
   不读 `OTEL_SERVICE_NAME`、`OTEL_RESOURCE_ATTRIBUTES`；
-- **请求 ID 的来源**（请求入口中间件 `internal/platform/httpserver/trace.go`）：只有 `HTTP_TRUSTED_PROXY=true`（在网关后）
-  时才接受上游的 `traceparent`（以后拆出的内部服务之间），其次是 `X-Trace-Id`（网关的 `$request_id`，必须是 32 位十六进制
+- **trace_id 的来源**（请求入口中间件 `internal/platform/httpserver/trace.go`）：只有 `HTTP_TRUSTED_PROXY=true`（在网关后）
+  时才接受上游的 `traceparent`（以后拆出的内部服务之间），其次是 `X-Trace-Id`（网关的 `$trace_id`，由 nginx 内置的 `$request_id` 经 `map` 改名，必须是 32 位十六进制
   且非全零，否则忽略），都没有时随机生成。网关给的 ID 经自定义 IDGenerator 直接成为根 span 的 `trace_id`，根 span 没有
   伪造的父 span。直连时一律新生成：客户端不能指定 trace_id，把自己的请求混进别人的日志；
-- 网关因连接错误把请求重试到另一个实例（`proxy_next_upstream`）时，两个实例收到同一个 `$request_id`，同一条 trace 下
+- 网关因连接错误把请求重试到另一个实例（`proxy_next_upstream`）时，两个实例收到同一个 `$trace_id`，同一条 trace 下
   会有两个根 span、`instance` 不同：这是同一个网关请求的两次尝试，不是执行了两遍。`trace_id` 的含义是"网关请求"，
   网关 access log 只有一行，`upstream` 字段列出两个实例；
 - 响应头 `X-Trace-Id` 写回当前 `trace_id`，前台 CORS 在 `ExposeHeaders` 里放行它，跨域的前端出错时能展示给用户、报给客服；

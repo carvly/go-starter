@@ -15,7 +15,7 @@ import (
 	"app.local/internal/platform/tracing"
 )
 
-// HeaderTraceID 是网关传入、响应写回的请求 ID：值就是 trace_id，网关 access log、应用日志、trace、
+// HeaderTraceID 是网关传入、响应写回 trace_id 的请求头：网关 access log、应用日志、trace、
 // 后台操作日志用同一个值。
 const HeaderTraceID = "X-Trace-Id"
 
