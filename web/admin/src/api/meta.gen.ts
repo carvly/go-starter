@@ -227,7 +227,7 @@ export const auditLogMeta = {
     target: { title: "目标" },
     result: { title: "结果" },
     ip: { title: "IP" },
-    request_id: { title: "请求 ID" },
+    trace_id: { title: "Trace ID" },
     created_at: { title: "时间" },
   },
 } as const;

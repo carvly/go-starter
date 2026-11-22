@@ -139,7 +139,6 @@ type AuditLog struct {
 	CreatedAt time.Time `json:"created_at"`
 	Id        string    `json:"id"`
 	Ip        string    `json:"ip"`
-	RequestId string    `json:"request_id"`
 
 	// Result Examples: 204
 	Result string `json:"result"`
@@ -149,6 +148,9 @@ type AuditLog struct {
 
 	// Target 路径参数（如被操作的员工 ID），没有时为空字符串
 	Target string `json:"target"`
+
+	// TraceId 请求的 trace_id，与网关访问日志、应用日志关联；CLI 操作为空字符串
+	TraceId string `json:"trace_id"`
 }
 
 // AuditLogList defines model for AuditLogList.

@@ -7,7 +7,6 @@ import (
 
 	"github.com/labstack/echo/v5"
 
-	"app.local/internal/kit/logctx"
 	"app.local/internal/modules/staff/adminapi/oapi"
 	staff "app.local/internal/modules/staff/domain"
 	"app.local/internal/platform/httpserver"
@@ -65,7 +64,7 @@ func (h *Handler) StaffLogin(c *echo.Context) error {
 		Password:  req.Password,
 		IP:        c.RealIP(),
 		UserAgent: c.Request().UserAgent(),
-		RequestID: logctx.RequestID(c.Request().Context()),
+		TraceID:   httpserver.TraceID(c.Request().Context()),
 	})
 	if err != nil {
 		return err
@@ -365,7 +364,7 @@ func (h *Handler) ListAuditLogs(c *echo.Context, params oapi.ListAuditLogsParams
 	for _, e := range items {
 		resp.Items = append(resp.Items, oapi.AuditLog{
 			Id: e.ID, StaffId: optional(e.StaffID), Action: e.Action, Target: e.Target,
-			Result: e.Result, Ip: e.IP, RequestId: e.RequestID, CreatedAt: e.CreatedAt,
+			Result: e.Result, Ip: e.IP, TraceId: e.TraceID, CreatedAt: e.CreatedAt,
 		})
 	}
 	if next != "" {

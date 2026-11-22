@@ -26,6 +26,12 @@ var ErrUnexpectedExit = errors.New("lifecycle: component exited unexpectedly")
 // ErrStopTimeout 表示 timeout 内仍有组件没有退出。
 var ErrStopTimeout = errors.New("lifecycle: components did not stop within timeout")
 
+// Failed 报告 Start 收到的 ctx 是否因为同组组件出错或提前退出而取消，而不是收到停止信号（信号和父 ctx 取消的
+// cause 都是 context.Canceled）。组件据此跳过只对正常下线有意义的等待，例如 HTTP 排空。
+func Failed(ctx context.Context) bool {
+	return ctx.Err() != nil && !errors.Is(context.Cause(ctx), context.Canceled)
+}
+
 // Run 并发启动全部组件；任一组件返回错误、提前退出或 ctx 被取消时，按注册
 // 逆序在 timeout 内 Stop 全部组件，返回第一个错误（ctx 取消本身不算错误）。
 func Run(ctx context.Context, timeout time.Duration, cs ...Component) error {

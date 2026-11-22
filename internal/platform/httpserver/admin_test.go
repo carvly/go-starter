@@ -13,6 +13,7 @@ import (
 
 	"app.local/internal/config"
 	"app.local/internal/platform/httpserver"
+	"app.local/internal/platform/tracing"
 )
 
 const adminOrigin = "https://admin.example.com"
@@ -32,6 +33,7 @@ func adminRoutes(g *echo.Group) {
 func newAdminServer(t *testing.T, deps httpserver.AdminDeps) *echo.Echo {
 	t.Helper()
 	deps.Logger = discardLogger()
+	deps.Tracer = tracing.Disabled()
 	deps.HTTP = config.HTTPConfig{
 		BodyLimitBytes:           2 * 1024 * 1024,
 		RequestTimeout:           5 * time.Second,
@@ -79,7 +81,7 @@ func TestAdmin_RoutesOutsideAPIPrefix(t *testing.T) {
 	e := newAdminServer(t, httpserver.AdminDeps{Static: fstest.MapFS{"index.html": {Data: []byte("<html/>")}}})
 	want := []string{
 		"GET /*", "HEAD /*", // 前端页面，网关转发
-		"GET /healthz", "GET /metrics", // 网关拦截
+		"GET /healthz", "GET /readyz", "GET /metrics", // 网关拦截
 		"GET /docs", "GET /admin.yaml", // 测试环境转发，生产环境关闭且网关拦截
 	}
 	var got []string
@@ -229,6 +231,7 @@ func TestAdmin_SPA(t *testing.T) {
 // 冷启动打开页面要并发加载几十个资源文件，全局限流只限接口，不能让页面加载一半。
 func TestAdmin_StaticFilesSkipGlobalRateLimit(t *testing.T) {
 	e, err := httpserver.NewAdmin(httpserver.AdminDeps{
+		Tracer: tracing.Disabled(),
 		Logger: discardLogger(),
 		HTTP:   config.HTTPConfig{BodyLimitBytes: 1 << 20, RequestTimeout: 5 * time.Second, GlobalRateLimitPerSecond: 1},
 		Origin: adminOrigin,
@@ -262,6 +265,7 @@ func passthrough(next echo.HandlerFunc) echo.HandlerFunc { return next }
 // 有后台路由时必须有 Auth；只挂了别的中间件（如操作日志）不算鉴权。
 func TestAdmin_RefusesRoutesWithoutAuth(t *testing.T) {
 	_, err := httpserver.NewAdmin(httpserver.AdminDeps{
+		Tracer:      tracing.Disabled(),
 		Logger:      discardLogger(),
 		HTTP:        config.HTTPConfig{BodyLimitBytes: 1024},
 		Origin:      adminOrigin,

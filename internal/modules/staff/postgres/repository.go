@@ -461,10 +461,10 @@ func (r *Repository) RecordAudit(ctx context.Context, e *staff.AuditEntry) error
 		at = &e.CreatedAt
 	}
 	err := r.handle.Resolve(ctx).QueryRow(ctx, `
-		INSERT INTO staff_audit_logs (id, staff_id, login_key, action, target, result, ip, request_id, created_at)
+		INSERT INTO staff_audit_logs (id, staff_id, login_key, action, target, result, ip, trace_id, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9, now()))
 		RETURNING created_at
-	`, e.ID, nullable(e.StaffID), e.LoginKey, e.Action, e.Target, e.Result, e.IP, e.RequestID, at).Scan(&e.CreatedAt)
+	`, e.ID, nullable(e.StaffID), e.LoginKey, e.Action, e.Target, e.Result, e.IP, e.TraceID, at).Scan(&e.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("postgres: record staff audit: %w", err)
 	}
@@ -492,7 +492,7 @@ func (r *Repository) QueryAudit(ctx context.Context, f staff.AuditFilter) ([]*st
 		cursorAt, cursorID = &createdAt, &id
 	}
 	rows, err := r.handle.Resolve(ctx).Query(ctx, `
-		SELECT id, staff_id, action, target, result, ip, request_id, created_at
+		SELECT id, staff_id, action, target, result, ip, trace_id, created_at
 		FROM staff_audit_logs
 		WHERE ($1::uuid IS NULL OR staff_id = $1::uuid)
 		  AND ($2::timestamptz IS NULL OR created_at >= $2)
@@ -507,7 +507,7 @@ func (r *Repository) QueryAudit(ctx context.Context, f staff.AuditFilter) ([]*st
 	items, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (*staff.AuditEntry, error) {
 		var e staff.AuditEntry
 		var staffID *string
-		err := row.Scan(&e.ID, &staffID, &e.Action, &e.Target, &e.Result, &e.IP, &e.RequestID, &e.CreatedAt)
+		err := row.Scan(&e.ID, &staffID, &e.Action, &e.Target, &e.Result, &e.IP, &e.TraceID, &e.CreatedAt)
 		e.StaffID = deref(staffID)
 		return &e, err
 	})

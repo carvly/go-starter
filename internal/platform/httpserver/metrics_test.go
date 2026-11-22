@@ -13,6 +13,7 @@ import (
 	"app.local/internal/platform/httpserver"
 	"app.local/internal/platform/metrics"
 	"app.local/internal/platform/process"
+	"app.local/internal/platform/tracing"
 )
 
 // newMetricsServers 按组合根的方式接线：前台带运行时指标，后台只有自己的。
@@ -24,6 +25,7 @@ func newMetricsServers(t *testing.T) (api, admin *echo.Echo) {
 		g.GET("/widgets/abort", func(*echo.Context) error { panic(http.ErrAbortHandler) })
 	}
 	api, err := httpserver.New(httpserver.Deps{
+		Tracer: tracing.Disabled(),
 		Logger: discardLogger(), HTTP: httpCfg, Metrics: metrics.NewRuntimeRegistry(id),
 		CORS:   config.CORSConfig{AllowOrigins: []string{"https://example.com"}},
 		Routes: []func(*echo.Group){testRoutes, abort},
@@ -32,6 +34,7 @@ func newMetricsServers(t *testing.T) (api, admin *echo.Echo) {
 		t.Fatal(err)
 	}
 	admin, err = httpserver.NewAdmin(httpserver.AdminDeps{
+		Tracer: tracing.Disabled(),
 		Logger: discardLogger(), HTTP: httpCfg, Metrics: metrics.NewRegistry(id), Origin: adminOrigin,
 	})
 	if err != nil {

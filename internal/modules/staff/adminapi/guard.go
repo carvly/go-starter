@@ -10,7 +10,6 @@ import (
 
 	"github.com/labstack/echo/v5"
 
-	"app.local/internal/kit/logctx"
 	staff "app.local/internal/modules/staff/domain"
 	"app.local/internal/platform/httpserver"
 )
@@ -98,7 +97,7 @@ func NewGuard(svc *staff.Service, ops []staff.Operation) echo.MiddlewareFunc {
 	}
 }
 
-// audit 记一条写操作日志：员工、请求方法 + 路由模板、路径参数、状态码、IP、request_id。
+// audit 记一条写操作日志：员工、请求方法 + 路由模板、路径参数、状态码、IP、trace_id。
 // 不记录请求体（可能含密码）。写失败只记应用日志，不影响已完成的操作。
 func audit(c *echo.Context, svc *staff.Service, staffID, action string, handlerErr error) {
 	status := http.StatusOK
@@ -114,12 +113,12 @@ func audit(c *echo.Context, svc *staff.Service, staffID, action string, handlerE
 	target := strings.Join(params, ",")
 	ctx := c.Request().Context()
 	err := svc.RecordAudit(ctx, &staff.AuditEntry{
-		StaffID:   staffID,
-		Action:    action,
-		Target:    target,
-		Result:    strconv.Itoa(status),
-		IP:        c.RealIP(),
-		RequestID: logctx.RequestID(ctx),
+		StaffID: staffID,
+		Action:  action,
+		Target:  target,
+		Result:  strconv.Itoa(status),
+		IP:      c.RealIP(),
+		TraceID: httpserver.TraceID(ctx),
 	})
 	if err != nil {
 		c.Logger().ErrorContext(ctx, "staff: record audit failed", slog.String("action", action), slog.Any("error", err))

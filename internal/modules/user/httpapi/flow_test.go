@@ -21,6 +21,7 @@ import (
 	"app.local/internal/platform/crypto"
 	"app.local/internal/platform/httpserver"
 	"app.local/internal/platform/oauth"
+	"app.local/internal/platform/tracing"
 )
 
 // stubProvider 是 oauth.Provider 的内存实现：按 caps 声明能力，记下最近一次授权和换身份的参数。
@@ -86,6 +87,7 @@ func newFlowServerWith(t *testing.T, registry oauth.Registry) (*echo.Echo, *doma
 		CookieDeliveryOrigins: []string{"https://app.example.com"},
 	})
 	e, err := httpserver.New(httpserver.Deps{
+		Tracer: tracing.Disabled(),
 		Logger: slog.New(slog.DiscardHandler),
 		HTTP:   config.HTTPConfig{BodyLimitBytes: 1 << 20, RequestTimeout: 5 * time.Second, GlobalRateLimitPerSecond: 1000},
 		CORS:   config.CORSConfig{AllowOrigins: []string{"https://app.example.com", "https://evil.example.com"}},

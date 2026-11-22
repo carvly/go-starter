@@ -76,7 +76,7 @@
   解码失败 400、请求体超过上限 413、Content-Type 不对 415，不要再包成 400，否则 413 会变成 400）、
   生成代码绑定路径参数失败（`Invalid format for parameter id: ...`）、BodyLimit 413。所以自己构造
   `echo.NewHTTPError` 时 message 也必须可以安全地返回给客户端；业务错误一律用 `errs.New`。
-- 其它任何错误都是固定文案的 500，详细信息只进带 request_id 的日志。
+- 其它任何错误都是固定文案的 500，详细信息只进带 trace_id 的日志（响应头 `X-Trace-Id` 是同一个值）。
 - 新增模块、新增错误都不需要改 `internal/platform/httpserver`。
 
 ## 后台接入面
@@ -128,24 +128,27 @@
 
 ## 中间件顺序
 
-全局链固定为：指标 → Recover → RequestID → BodyLimit → CORS → Secure → 全局限流 →
+全局链固定为：请求入口 → 指标 → Recover → BodyLimit → CORS → Secure → 全局限流 →
 Timeout（`internal/platform/httpserver/server.go` 的 `newServer`，前台和
 后台共用，后台没有 CORS）。鉴权是操作级中间件，由模块挂载；user 还给自己的操作挂了按 IP
 的限流和只接受 JSON 请求体的中间件，见 [user.md](../../internal/modules/user/docs/user.md) 的"登录接口的防护"。
 
-- 指标必须在最外层，紧接着是 Recover：指标要看到 Recover 把 panic 转成的错误，才能按 500 计入。**错误在指标中间件里
+- 请求入口（`trace.go` 的 `newRequestMiddleware`）在最外层：建 server span、写响应头 `X-Trace-Id`、在 ctx 里绑定 logger 和
+  `method`、`route` 字段，之后的一切（指标的 exemplar、错误日志）都用得到；span 的状态取指标中间件渲染后的实际状态码。
+  trace_id 的来源和信任规则见 [observability.md](observability.md) 的"tracing"；
+- 指标紧接在请求入口之内，再里面是 Recover：指标要看到 Recover 把 panic 转成的错误，才能按 500 计入。**错误在指标中间件里
   渲染**：它把 handler 链返回的错误交给 `HTTPErrorHandler`，然后返回 nil，耗时才包含写出错误响应的时间，状态码取实际写出的。
-  所以在它外面再加的中间件看不到错误，需要看错误的中间件挂在它里面；`method` 由它的 `methodName` 归一化，日志字段
+  所以在它外面的中间件（只有请求入口）看不到错误，只看状态码；需要看错误的中间件挂在它里面；`method` 由它的 `methodName` 归一化，日志字段
   与指标标签同值。除此之外 Recover 必须在所有中间件外面：Echo v5 自己不恢复 panic，没有 Recover 时靠 net/http 在连接级
   兜底——连接直接断开、客户端拿不到响应，panic 只进 `http.Server.ErrorLog`（Echo 把它接到了
-  应用日志，但不带 request_id，也不经过错误处理器）。Recover 让 panic 渲染成固定文案的
-  500，panic 内容带着 request_id 进结构化日志，堆栈是单独的 `stack` 字段（只取 panic 所在的 goroutine：Echo 默认取全部
+  应用日志，但不带 trace_id，也不经过错误处理器）。Recover 让 panic 渲染成固定文案的
+  500，panic 内容带着 trace_id 进结构化日志，堆栈是单独的 `stack` 字段（只取 panic 所在的 goroutine：Echo 默认取全部
   goroutine 并截断到 4KB，出问题的那段常被挤掉）。Timeout 用的是 `ContextTimeout`，不另起
   goroutine，handler 里的 panic 仍在 Recover 的调用栈上；
 - CORS 必须在限流前面，否则预检请求会被拦。前台 CORS 开了 `AllowCredentials: true`
   （refresh token 按 Origin 经 cookie 交付，见 [user.md](../../internal/modules/user/docs/user.md) 的"会话"），所以 `AllowOrigins`
   必须显式列出，不能用 `*`；`AllowHeaders` 只放行 `Authorization` 和 `Content-Type`，
-  新增自定义请求头要同时加进这个白名单（`server.go` 的 `New`）；
+  新增自定义请求头要同时加进这个白名单（`server.go` 的 `New`）；`ExposeHeaders` 放行 `X-Trace-Id`，跨域的前端才能读到它；
 - `IPExtractor` 必须按部署拓扑配置（`HTTP_TRUSTED_PROXY`），否则按 IP 的限流可以被
   伪造 header 绕过；
 - 全局限流的计数存储由 `internal/platform/ratelimit` 提供：配置了 Redis 时

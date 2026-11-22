@@ -91,7 +91,7 @@ type AuditEntry struct {
 	Target    string
 	Result    string
 	IP        string
-	RequestID string
+	TraceID   string
 	CreatedAt time.Time
 }
 

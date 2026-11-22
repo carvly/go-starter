@@ -12,66 +12,29 @@ import (
 
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
+	"github.com/riverqueue/rivercontrib/otelriver"
 
 	"app.local/internal/kit/logctx"
 	"app.local/internal/platform/logger"
+	"app.local/internal/platform/tracing"
 )
 
-func TestInsertMiddleware_WritesRequestIDIntoMetadata(t *testing.T) {
-	params := []*rivertype.JobInsertParams{
-		{Kind: "a"},
-		{Kind: "b", Metadata: []byte(`{"other":1}`)},
-		{Kind: "c", Metadata: []byte(`{"request_id":"keep"}`)},
-		{Kind: "d", Metadata: []byte(`not json`)},
-	}
-	ctx := logctx.WithRequestID(t.Context(), "rid-1")
-	called := false
-	_, err := (&insertMiddleware{}).InsertMany(ctx, params, func(context.Context) ([]*rivertype.JobInsertResult, error) {
-		called = true
-		return nil, nil
-	})
-	if err != nil || !called {
-		t.Fatalf("err = %v, called = %v", err, called)
-	}
+const (
+	requestTraceID = "4bf92f3577b34da6a3ce929d0e0e4736"
+	jobTraceparent = `{"traceparent":"00-` + requestTraceID + `-00f067aa0ba902b7-01"}`
+)
 
-	want := []string{"rid-1", "rid-1", "keep"}
-	for i, w := range want {
-		var m map[string]any
-		if err := json.Unmarshal(params[i].Metadata, &m); err != nil {
-			t.Fatalf("%s metadata = %s", params[i].Kind, params[i].Metadata)
-		}
-		if m["request_id"] != w {
-			t.Errorf("%s request_id = %v, want %s", params[i].Kind, m["request_id"], w)
-		}
-	}
-	if string(params[1].Metadata) == `{"request_id":"rid-1"}` {
-		t.Error("应保留已有的 metadata 键")
-	}
-	if string(params[3].Metadata) != "not json" {
-		t.Errorf("非 JSON 的 metadata 应原样保留：%s", params[3].Metadata)
-	}
-}
-
-func TestInsertMiddleware_NoRequestIDLeavesMetadataUntouched(t *testing.T) {
-	params := []*rivertype.JobInsertParams{{Kind: "a"}}
-	_, _ = (&insertMiddleware{}).InsertMany(t.Context(), params, func(context.Context) ([]*rivertype.JobInsertResult, error) {
-		return nil, nil
-	})
-	if params[0].Metadata != nil {
-		t.Errorf("没有 request_id 时不应写 metadata：%s", params[0].Metadata)
-	}
-}
-
-func TestWorkMiddleware_AddsJobFieldsAndRequestID(t *testing.T) {
+func TestWorkMiddleware_AddsJobFieldsAndLinkTraceID(t *testing.T) {
 	cases := []struct {
 		name string
 		job  rivertype.JobRow
 		want string
 	}{
-		{"来自 metadata", rivertype.JobRow{Metadata: []byte(`{"request_id":"from-meta"}`)}, "from-meta"},
+		{"入队时带了 traceparent", rivertype.JobRow{Metadata: []byte(jobTraceparent)}, requestTraceID},
 		// 任务参数是业务数据，不是关联字段的来源。
-		{"不读任务参数", rivertype.JobRow{Metadata: []byte(`{}`), EncodedArgs: []byte(`{"request_id":"from-args"}`)}, ""},
-		{"没有 metadata", rivertype.JobRow{}, ""},
+		{"不读任务参数", rivertype.JobRow{Metadata: []byte(`{}`), EncodedArgs: []byte(jobTraceparent)}, ""},
+		{"traceparent 不合法", rivertype.JobRow{Metadata: []byte(`{"traceparent":"garbage"}`)}, ""},
+		{"定时任务没有 metadata", rivertype.JobRow{}, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -82,9 +45,6 @@ func TestWorkMiddleware_AddsJobFieldsAndRequestID(t *testing.T) {
 
 			err := (&workMiddleware{log: log}).Work(t.Context(), &job, func(ctx context.Context) error {
 				log.InfoContext(ctx, "inside job")
-				if logctx.RequestID(ctx) != tc.want {
-					t.Errorf("RequestID = %q, want %q", logctx.RequestID(ctx), tc.want)
-				}
 				return nil
 			})
 			if err != nil {
@@ -97,8 +57,8 @@ func TestWorkMiddleware_AddsJobFieldsAndRequestID(t *testing.T) {
 			if rec["job_kind"] != "user_deleted" || rec["job_id"] != float64(7) || rec["attempt"] != float64(2) {
 				t.Errorf("任务字段缺失：%v", rec)
 			}
-			if got, _ := rec["request_id"].(string); got != tc.want {
-				t.Errorf("request_id = %q, want %q", got, tc.want)
+			if got, _ := rec["link_trace_id"].(string); got != tc.want {
+				t.Errorf("link_trace_id = %q, want %q", got, tc.want)
 			}
 		})
 	}
@@ -124,7 +84,7 @@ func TestWorkMiddleware_LogsFailureWithCorrelationFields(t *testing.T) {
 			var buf bytes.Buffer
 			job := rivertype.JobRow{
 				ID: 7, Kind: "user_deleted", Attempt: tc.attempt, MaxAttempts: 3,
-				Metadata: []byte(`{"request_id":"rid-1"}`),
+				Metadata: []byte(jobTraceparent),
 			}
 			err := (&workMiddleware{log: logger.New("info", &buf)}).Work(t.Context(), &job, func(context.Context) error {
 				return tc.err
@@ -145,7 +105,7 @@ func TestWorkMiddleware_LogsFailureWithCorrelationFields(t *testing.T) {
 			if rec["level"] != tc.wantLevel || rec["msg"] != tc.wantMsg {
 				t.Errorf("level/msg = %v/%v, want %s/%s", rec["level"], rec["msg"], tc.wantLevel, tc.wantMsg)
 			}
-			if rec["request_id"] != "rid-1" || rec["job_kind"] != "user_deleted" ||
+			if rec["link_trace_id"] != requestTraceID || rec["job_kind"] != "user_deleted" ||
 				rec["job_id"] != float64(7) || rec["attempt"] != float64(tc.attempt) {
 				t.Errorf("失败日志缺关联字段：%v", rec)
 			}
@@ -158,7 +118,7 @@ func TestWorkMiddleware_LogsFailureWithCorrelationFields(t *testing.T) {
 
 func TestWorkMiddleware_LogsPanicAndRepanics(t *testing.T) {
 	var buf bytes.Buffer
-	job := rivertype.JobRow{ID: 7, Kind: "user_deleted", Attempt: 1, MaxAttempts: 3, Metadata: []byte(`{"request_id":"rid-1"}`)}
+	job := rivertype.JobRow{ID: 7, Kind: "user_deleted", Attempt: 1, MaxAttempts: 3, Metadata: []byte(jobTraceparent)}
 	defer func() {
 		if r := recover(); r != "boom" {
 			t.Fatalf("panic 应继续抛给 river，由它按失败处理：recover = %v", r)
@@ -168,7 +128,7 @@ func TestWorkMiddleware_LogsPanicAndRepanics(t *testing.T) {
 			t.Fatalf("%v: %s", err, buf.String())
 		}
 		if rec["level"] != "ERROR" || rec["msg"] != "queue: job panicked" || rec["panic"] != "boom" ||
-			rec["request_id"] != "rid-1" || rec["job_kind"] != "user_deleted" {
+			rec["link_trace_id"] != requestTraceID || rec["job_kind"] != "user_deleted" {
 			t.Errorf("panic 日志：%v", rec)
 		}
 		// 堆栈要能定位到 panic 的位置，即任务函数本身。
@@ -183,22 +143,23 @@ func TestWorkMiddleware_LogsPanicAndRepanics(t *testing.T) {
 
 func TestNewConfig_UsesAppLoggerAndMiddleware(t *testing.T) {
 	var buf bytes.Buffer
-	cfg := newConfig(nil, nil, slog.New(slog.NewJSONHandler(&buf, nil)))
+	cfg := newConfig(nil, nil, slog.New(slog.NewJSONHandler(&buf, nil)), tracing.Disabled())
 	if cfg.Logger == nil {
 		t.Fatal("必须设置 Logger，否则 river 用自己的文本格式 logger")
 	}
-	cfg.Logger.InfoContext(logctx.WithRequestID(t.Context(), "rid-1"), "river says")
+	cfg.Logger.InfoContext(logctx.WithUserID(t.Context(), "u1"), "river says")
 	var rec map[string]any
-	if err := json.Unmarshal(buf.Bytes(), &rec); err != nil || rec["request_id"] != "rid-1" {
+	if err := json.Unmarshal(buf.Bytes(), &rec); err != nil || rec["user_id"] != "u1" {
 		t.Errorf("river 的日志应是带关联字段的 JSON：%s", buf.String())
 	}
-	var hasInsert, hasWork bool
-	for _, m := range cfg.Middleware {
-		_, isInsert := m.(rivertype.JobInsertMiddleware)
-		_, isWork := m.(rivertype.WorkerMiddleware)
-		hasInsert, hasWork = hasInsert || isInsert, hasWork || isWork
+	// otelriver 必须在 workMiddleware 外层：后者的日志要拿到 work span 的 trace_id。
+	if len(cfg.Middleware) != 2 {
+		t.Fatalf("Middleware = %v", cfg.Middleware)
 	}
-	if !hasInsert || !hasWork {
-		t.Errorf("Middleware 缺少入队或执行中间件：%v", cfg.Middleware)
+	if _, ok := cfg.Middleware[0].(*otelriver.Middleware); !ok {
+		t.Errorf("第一个中间件应是 otelriver：%T", cfg.Middleware[0])
+	}
+	if _, ok := cfg.Middleware[1].(*workMiddleware); !ok {
+		t.Errorf("第二个中间件应是 workMiddleware：%T", cfg.Middleware[1])
 	}
 }

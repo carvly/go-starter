@@ -18,6 +18,7 @@ import (
 	"app.local/internal/config"
 	"app.local/internal/kit/errs"
 	"app.local/internal/platform/httpserver"
+	"app.local/internal/platform/tracing"
 )
 
 var (
@@ -69,6 +70,7 @@ type widgetRequest struct {
 func newTestServer(t *testing.T, logger *slog.Logger, apiDocs bool, pingers ...httpserver.Pinger) *echo.Echo {
 	t.Helper()
 	e, err := httpserver.New(httpserver.Deps{
+		Tracer: tracing.Disabled(),
 		Logger: logger,
 		HTTP: config.HTTPConfig{
 			BodyLimitBytes:           2 * 1024 * 1024,
@@ -179,17 +181,17 @@ func TestServer_UnknownErrorDoesNotLeakDetails(t *testing.T) {
 	}
 }
 
-func TestServer_ErrorLogsIncludeRequestID(t *testing.T) {
+func TestServer_ErrorLogsIncludeTraceID(t *testing.T) {
 	var logBuf bytes.Buffer
 	e := newTestServer(t, slog.New(slog.NewJSONHandler(&logBuf, nil)), false)
 
 	rec := get(e, "/v1/widgets/missing")
-	requestID := rec.Header().Get(echo.HeaderXRequestID)
-	if requestID == "" {
-		t.Fatal("响应没有带 X-Request-Id header")
+	traceID := rec.Header().Get(httpserver.HeaderTraceID)
+	if traceID == "" {
+		t.Fatal("响应没有带 X-Trace-Id header")
 	}
-	if !strings.Contains(logBuf.String(), requestID) {
-		t.Errorf("错误日志里没有 request_id = %q，日志内容: %s", requestID, logBuf.String())
+	if !strings.Contains(logBuf.String(), `"trace_id":"`+traceID+`"`) {
+		t.Errorf("错误日志里没有 trace_id = %q，日志内容: %s", traceID, logBuf.String())
 	}
 }
 
@@ -280,8 +282,8 @@ func TestServer_ValidationErrorUsesJSONFieldNames(t *testing.T) {
 	}
 }
 
-// handler panic 由 Recover 渲染成固定文案的 500，panic 内容只进带 request_id 的日志。
-func TestServer_PanicRendersInternalErrorAndLogsRequestID(t *testing.T) {
+// handler panic 由 Recover 渲染成固定文案的 500，panic 内容只进带 trace_id 的日志。
+func TestServer_PanicRendersInternalErrorAndLogsTraceID(t *testing.T) {
 	var logBuf bytes.Buffer
 	e := newTestServer(t, slog.New(slog.NewJSONHandler(&logBuf, nil)), false)
 
@@ -292,9 +294,9 @@ func TestServer_PanicRendersInternalErrorAndLogsRequestID(t *testing.T) {
 	if body := decodeError(t, rec); body.Code != "internal_error" || strings.Contains(rec.Body.String(), "boom") {
 		t.Errorf("panic 响应泄露了内部细节: %s", rec.Body.String())
 	}
-	requestID := rec.Header().Get(echo.HeaderXRequestID)
-	if requestID == "" || !strings.Contains(logBuf.String(), requestID) || !strings.Contains(logBuf.String(), "boom") {
-		t.Errorf("日志应带 request_id = %q 和 panic 内容，实际: %s", requestID, logBuf.String())
+	traceID := rec.Header().Get(httpserver.HeaderTraceID)
+	if traceID == "" || !strings.Contains(logBuf.String(), traceID) || !strings.Contains(logBuf.String(), "boom") {
+		t.Errorf("日志应带 trace_id = %q 和 panic 内容，实际: %s", traceID, logBuf.String())
 	}
 }
 

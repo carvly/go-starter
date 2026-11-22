@@ -19,6 +19,7 @@ import (
 	"app.local/internal/platform/httpserver"
 	"app.local/internal/platform/logger"
 	"app.local/internal/platform/process"
+	"app.local/internal/platform/tracing"
 )
 
 func parseLogLines(t *testing.T, buf *bytes.Buffer) []map[string]any {
@@ -42,9 +43,10 @@ func TestServer_EveryLogInRequestCarriesCorrelationFields(t *testing.T) {
 	var buf bytes.Buffer
 	root := logger.New("info", &buf, process.New("api", "host-a").LogAttrs()...)
 	e, err := httpserver.New(httpserver.Deps{
+		Tracer: tracing.Disabled(),
 		Logger: root,
 		HTTP: config.HTTPConfig{
-			BodyLimitBytes: 1 << 20, RequestTimeout: 5 * time.Second, GlobalRateLimitPerSecond: 1000,
+			BodyLimitBytes: 1 << 20, RequestTimeout: 5 * time.Second, GlobalRateLimitPerSecond: 1000, TrustedProxy: true,
 		},
 		CORS: config.CORSConfig{AllowOrigins: []string{"https://example.com"}},
 		Routes: []func(*echo.Group){func(g *echo.Group) {
@@ -68,7 +70,7 @@ func TestServer_EveryLogInRequestCarriesCorrelationFields(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/orders/42", nil)
-	req.Header.Set(echo.HeaderXRequestID, "rid-from-gateway")
+	req.Header.Set(httpserver.HeaderTraceID, gatewayTraceID)
 	e.ServeHTTP(httptest.NewRecorder(), req)
 
 	recs := parseLogLines(t, &buf)
@@ -77,7 +79,7 @@ func TestServer_EveryLogInRequestCarriesCorrelationFields(t *testing.T) {
 	}
 	for _, rec := range recs {
 		for key, want := range map[string]any{
-			"request_id": "rid-from-gateway", "user_id": "u-1", "method": "GET", "route": "/v1/orders/:id",
+			"trace_id": gatewayTraceID, "user_id": "u-1", "method": "GET", "route": "/v1/orders/:id",
 			"service_name": "api", "service_instance_id": "host-a",
 		} {
 			if rec[key] != want {
@@ -102,7 +104,7 @@ func TestServer_UnmatchedRouteHasNoRouteField(t *testing.T) {
 		t.Fatal("404 应记一条错误日志")
 	}
 	for _, rec := range recs {
-		if rec["request_id"] == nil || rec["method"] != "GET" {
+		if rec["trace_id"] == nil || rec["span_id"] == nil || rec["method"] != "GET" {
 			t.Errorf("缺少关联字段：%v", rec)
 		}
 		if route, ok := rec["route"]; ok {
@@ -134,6 +136,7 @@ func TestServer_NonStandardMethodLoggedAsOther(t *testing.T) {
 func TestAdmin_StaffIDInLogs(t *testing.T) {
 	var buf bytes.Buffer
 	e, err := httpserver.NewAdmin(httpserver.AdminDeps{
+		Tracer: tracing.Disabled(),
 		Logger: logger.New("info", &buf),
 		HTTP: config.HTTPConfig{
 			BodyLimitBytes: 1 << 20, RequestTimeout: 5 * time.Second, GlobalRateLimitPerSecond: 1000,
@@ -169,6 +172,7 @@ func TestServer_ErrorLogLevelFollowsStatus(t *testing.T) {
 		"not_found": errs.KindNotFound, "too_many": errs.KindTooManyRequests, "internal": errs.KindInternal,
 	}
 	e, err := httpserver.New(httpserver.Deps{
+		Tracer: tracing.Disabled(),
 		Logger: logger.New("debug", &buf),
 		HTTP: config.HTTPConfig{
 			BodyLimitBytes: 1 << 20, RequestTimeout: 5 * time.Second, GlobalRateLimitPerSecond: 1000,

@@ -26,9 +26,10 @@ river 不做逐任务的心跳续租：`Work` 的 ctx 在任务超时后取消�
   `internal/modules/user/jobs/` 的测试锁死 `user_deleted`。`internal/app` 的测试只检查
   每个 Kind 都有 worker，不检查值。
 - JSON 字段名同样是存量任务的格式：只能新增可选字段，不能改名或删除。
-- 日志关联字段由 `internal/platform/queue` 的中间件统一处理，事件和 worker 都不用管：入队时把请求的
-  request_id 写进任务 metadata，执行时在 ctx 里写入 `job_kind`、`job_id`、`attempt` 和 request_id，任务返回的错误和 panic 也由它
-  用这个 ctx 记录（见 [observability.md](observability.md) 的"每条日志都带的字段"和"写法"）。事件不声明 request_id 字段。
+- 日志关联字段和 trace 由 `internal/platform/queue` 的中间件统一处理，事件和 worker 都不用管：otelriver 在最外层，入队时
+  把入队 span 的 `traceparent` 写进任务 metadata，执行时建这次执行的 span 并以 link 指向入队方；里面的执行中间件在 ctx
+  里写入 `job_kind`、`job_id`、`attempt` 和 `link_trace_id`（入队时所在 trace 的 trace_id），任务返回的错误和 panic 也由它
+  用这个 ctx 记录（见 [observability.md](observability.md) 的"每条日志都带的字段"和"tracing"）。事件不声明 trace 字段。
 
 ## 发布
 

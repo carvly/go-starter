@@ -8,6 +8,10 @@ import (
 	"net/http"
 	"net/url"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // WeChatApp 是一个微信登录入口的应用凭据：网站应用、服务号、小程序、移动应用。
@@ -21,26 +25,56 @@ const defaultWeChatAPIBase = "https://api.weixin.qq.com"
 // wechatClient 是微信 API 的底层客户端。apiBase 可换成 httptest 服务器的地址做测试。
 type wechatClient struct {
 	apiBase string
-	http    *http.Client
+	// host 是 span 的 server.address。
+	host string
+	http *http.Client
 }
 
 func newWeChatClient(apiBase string) *wechatClient {
 	if apiBase == "" {
 		apiBase = defaultWeChatAPIBase
 	}
+	var host string
+	if u, err := url.Parse(apiBase); err == nil {
+		host = u.Host
+	}
 	return &wechatClient{
 		apiBase: apiBase,
+		host:    host,
 		http:    &http.Client{Timeout: 15 * time.Second},
 	}
 }
 
-func (c *wechatClient) get(ctx context.Context, path string, q url.Values, out any) error {
+// tracerName 是微信调用 span 的 instrumentation scope。provider 取自 ctx 里请求或任务的 span：这个客户端由模块
+// 构造，不经组合根注入依赖；ctx 里没有 span 时不建 span。
+const tracerName = "app.local/internal/platform/oauth"
+
+// wechatResponse 是带 errcode/errmsg 的返回体（内嵌 wechatError）。
+type wechatResponse interface{ err() error }
+
+// get 为每次调用记一个 client span，只记方法、域名、路径和状态码。非 2xx 和 errcode≠0 都作为错误返回，span 同时标错。不用 otelhttp.NewTransport：它把完整 URL
+// 记进 url.full，查询参数里有 appid、secret（长期有效的应用凭据）和用户的 access_token，且无法配置脱敏。
+// 也不向微信传播 traceparent：把内部 trace_id 发给外部服务没有收益。
+func (c *wechatClient) get(ctx context.Context, path string, q url.Values, out wechatResponse) (err error) {
+	ctx, span := trace.SpanFromContext(ctx).TracerProvider().Tracer(tracerName).Start(ctx, "wechat GET "+path, trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(attribute.String("http.request.method", http.MethodGet),
+			attribute.String("server.address", c.host), attribute.String("url.path", path)))
+	defer func() {
+		if err != nil {
+			span.SetStatus(codes.Error, "wechat request failed")
+		}
+		span.End()
+	}()
+
 	u := c.apiBase + path + "?" + q.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return fmt.Errorf("wechat: build request: %w", err)
 	}
 	resp, err := c.http.Do(req)
+	if err == nil {
+		span.SetAttributes(attribute.Int("http.response.status_code", resp.StatusCode))
+	}
 	if err != nil {
 		// *url.Error 的文字带完整 URL（含 appid 和 secret），错误会进日志：只保留路径和内层原因。
 		var ue *url.Error
@@ -50,10 +84,13 @@ func (c *wechatClient) get(ctx context.Context, path string, q url.Values, out a
 		return fmt.Errorf("wechat: %s: %w", path, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return fmt.Errorf("wechat: %s: unexpected status %d", path, resp.StatusCode)
+	}
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
 		return fmt.Errorf("wechat: %s: decode response: %w", path, err)
 	}
-	return nil
+	return out.err()
 }
 
 // wechatError 是微信的出错返回：HTTP 状态恒为 200，错误在 body 的 errcode/errmsg 里。
@@ -221,17 +258,11 @@ func (w *wechatBrowser) Exchange(ctx context.Context, p ExchangeParams) (Identit
 	if err != nil {
 		return Identity{}, err
 	}
-	if err := t.err(); err != nil {
-		return Identity{}, err
-	}
 	if err := checkSnapshot(t.IsSnapshotUser); err != nil {
 		return Identity{}, err
 	}
 	u, err := w.client.snsUserInfo(ctx, t.AccessToken, t.OpenID)
 	if err != nil {
-		return Identity{}, err
-	}
-	if err := u.err(); err != nil {
 		return Identity{}, err
 	}
 	if err := checkSnapshot(u.IsSnapshotUser); err != nil {
@@ -275,9 +306,6 @@ func (w *wechatMiniprogram) VerifyNative(ctx context.Context, cred NativeCredent
 	if err != nil {
 		return Identity{}, err
 	}
-	if err := s.err(); err != nil {
-		return Identity{}, err
-	}
 	if err := requireUnionID(s.UnionID); err != nil {
 		return Identity{}, err
 	}
@@ -310,17 +338,11 @@ func (w *wechatAppNative) VerifyNative(ctx context.Context, cred NativeCredentia
 	if err != nil {
 		return Identity{}, err
 	}
-	if err := t.err(); err != nil {
-		return Identity{}, err
-	}
 	if err := checkSnapshot(t.IsSnapshotUser); err != nil {
 		return Identity{}, err
 	}
 	u, err := w.client.snsUserInfo(ctx, t.AccessToken, t.OpenID)
 	if err != nil {
-		return Identity{}, err
-	}
-	if err := u.err(); err != nil {
 		return Identity{}, err
 	}
 	if err := checkSnapshot(u.IsSnapshotUser); err != nil {

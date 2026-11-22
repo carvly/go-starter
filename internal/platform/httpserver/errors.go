@@ -69,14 +69,14 @@ func StatusOf(err error) int {
 
 // newHTTPErrorHandler 只把 *errs.Error 的 Code/Message 返回给客户端，绝不返回
 // err.Error()：包装链里可能有 SQL、内部路径或调用链前缀。其余错误一律是固定
-// 文案的 500，排查信息走带 request_id 的日志。
+// 文案的 500，排查信息走带 trace_id 的日志。
 func newHTTPErrorHandler() echo.HTTPErrorHandler {
 	return func(c *echo.Context, err error) {
 		if r, uErr := echo.UnwrapResponse(c.Response()); uErr == nil && r.Committed {
 			return
 		}
 
-		// c.Logger() 是 RequestID 中间件绑好 request_id 的 per-request logger。
+		// c.Logger() 是请求入口中间件绑好的 per-request logger，trace_id 由根 Handler 从 ctx 的 span 取。
 		logger := c.Logger()
 
 		status, body := describe(err)

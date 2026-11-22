@@ -128,7 +128,7 @@ internal/
   app/                     组合根：infra.go、modules.go、migrate.go、module_configs.go、api.go、worker.go（跨模块调用时另有 adapters_*.go）
   kit/                     只依赖标准库的通用件
     errs/                  带 Kind 的业务错误，Kind 决定 HTTP 状态码
-    logctx/                ctx 里的 logger 和日志关联字段（request_id、user_id、任务 kind 等）
+    logctx/                ctx 里的 logger 和日志关联字段（user_id、任务 kind、link_trace_id 等）
     uow/                   UnitOfWork 契约（uowtest 是测试替身）
     lifecycle/             进程内组件的统一启停
   platform/                与业务无关的基础设施
@@ -140,8 +140,9 @@ internal/
     ratelimit/             Echo 限流的计数存储（Redis GCRA / 内存）
     crypto/                Argon2id、JWT 签发与校验
     oauth/                 第三方登录：浏览器 OAuth 流程与原生 code 换身份（目前只有微信）
-    httpserver/            Echo 构造（前台、后台两个 server）、中间件链、错误渲染、HTTP 指标、健康检查、API 文档
-    logger/                slog 构造：根 Handler 从 ctx 补关联字段
+    httpserver/            Echo 构造（前台、后台两个 server）、请求入口（span、X-Trace-Id）、中间件链、错误渲染、HTTP 指标、健康检查、API 文档、排空
+    logger/                slog 构造：根 Handler 从 ctx 补关联字段和 trace_id、span_id
+    tracing/               进程的 TracerProvider（始终有 trace_id，配置了地址才导出）、网关 trace_id 的接收
     process/               进程身份（service_name/service_version/service_instance_id），日志和指标共用
     metrics/               每个端口的 Prometheus Registry（service_info，进程的另带运行时指标）与 /metrics handler
     buildinfo/             构建版本（process 的 service_version）
@@ -165,8 +166,8 @@ deploy/                    Dockerfile、docker-compose.yml
 ## 一个请求和一个事件怎么走
 
 前台请求都经过 `httpserver` 的全局中间件链、按 tag 生成的模块路由和模块 Service；
-需要异步处理时，业务写入与 river 入队在同一个事务提交，队列中间件经任务 metadata 把请求的 request_id
-带到 worker 的日志上下文。当前项目的模块清单与链路见 `docs/PROJECT.md`。
+需要异步处理时，业务写入与 river 入队在同一个事务提交，otelriver 经任务 metadata 把请求的 trace 带到 worker：
+任务执行是一条新的 trace，以 span link 指向入队的请求，日志里是 `link_trace_id`。当前项目的模块清单与链路见 `docs/PROJECT.md`。
 
 ## 技术选型
 
@@ -201,7 +202,7 @@ testcontainers-go。显式构造函数注入，不用 wire/fx。
 | 后台前端：登录、强制改密、员工、角色、操作日志、个人设置，嵌入二进制 | 已实现（`web/admin/`）；TOTP、文件上传、任务面板等未实现，按需扩展 |
 | 定时任务、模块子命令 | 已实现（模块的 `PeriodicJobs()` / `Commands()`），staff 是第一个使用者 |
 | 集成测试（Repository 契约、dbtx、入队） | 已实现，需要 Docker |
-| 日志、request_id 跨进程传播、Prometheus 指标、健康检查 | 已实现；OpenTelemetry tracing 未接入 |
+| 日志、Prometheus 指标、OpenTelemetry tracing（trace_id 统一请求 ID、HTTP/SQL/Redis/微信/river 插桩）、健康检查 | 已实现；连接池、队列积压指标未接入 |
 | Docker 镜像、compose、CI、提交钩子、dependabot | 已实现；镜像漏洞扫描（trivy）未接入 |
 | 手写 outbox | 不实现，river 已覆盖（见"技术选型"） |
 | 外部消息队列 relay、跨服务 HTTP 调用封装、熔断 | 不预先实现，出现真实需求时再加 |

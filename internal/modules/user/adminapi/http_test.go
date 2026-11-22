@@ -18,6 +18,7 @@ import (
 	"app.local/internal/modules/user/domain"
 	"app.local/internal/modules/user/domain/domaintest"
 	"app.local/internal/platform/httpserver"
+	"app.local/internal/platform/tracing"
 )
 
 // newServer 用真实的后台 server（中间件链、校验器、错误处理）挂上本模块的操作。
@@ -32,6 +33,7 @@ func newServer(t *testing.T) (*echo.Echo, *domain.Service, *domaintest.Fakes) {
 	svc := domain.NewService(deps)
 	pass := func(next echo.HandlerFunc) echo.HandlerFunc { return next }
 	e, err := httpserver.NewAdmin(httpserver.AdminDeps{
+		Tracer: tracing.Disabled(),
 		Logger: slog.New(slog.DiscardHandler),
 		HTTP:   config.HTTPConfig{BodyLimitBytes: 1 << 20, RequestTimeout: 5 * time.Second, GlobalRateLimitPerSecond: 1000},
 		Origin: "https://admin.example.com",

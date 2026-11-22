@@ -19,6 +19,7 @@ import (
 	"go.yaml.in/yaml/v4"
 
 	"app.local/internal/platform/httpserver"
+	"app.local/internal/platform/tracing"
 )
 
 var modulePathPrefix = func() string {
@@ -189,7 +190,7 @@ func register() {
 }
 
 func newZeroInfra() *Infra {
-	return &Infra{Config: baseTestConfig(), Logger: discardLogger()}
+	return &Infra{Config: baseTestConfig(), Logger: discardLogger(), Tracer: tracing.Disabled()}
 }
 
 // specParamToEcho 把 spec 的 /orders/{id} 写法换成 Echo 的 /orders/:id。

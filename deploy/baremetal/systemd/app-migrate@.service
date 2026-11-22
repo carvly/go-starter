@@ -1,0 +1,12 @@
+# 迁移（%i 为版本号）：一次性服务，环境变量与 api/worker 完全一致，日志进 journal，
+# systemctl start 阻塞到迁移结束并以其退出码返回。由 rollout.sh 调用。
+[Unit]
+Description=app migrate (%i)
+
+[Service]
+Type=oneshot
+User=app
+Group=app
+EnvironmentFile=/etc/app/app.env
+ExecStart=/opt/app/releases/%i/api migrate up
+TimeoutStartSec=10min

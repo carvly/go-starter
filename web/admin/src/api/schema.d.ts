@@ -868,8 +868,11 @@ export interface components {
             result: string;
             /** IP */
             ip: string;
-            /** 请求 ID */
-            request_id: string;
+            /**
+             * Trace ID
+             * @description 请求的 trace_id，与网关访问日志、应用日志关联；CLI 操作为空字符串
+             */
+            trace_id: string;
             /**
              * 时间
              * Format: date-time

@@ -9,55 +9,18 @@ import (
 
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 
 	"app.local/internal/kit/logctx"
 )
 
-// metadataRequestID 是任务 metadata 里保存发起请求的 request_id 的键。
-const metadataRequestID = "request_id"
-
-// insertMiddleware 入队时把当前请求的 request_id 写进任务 metadata，任务执行时由
-// workMiddleware 恢复。所有经 river 入队的任务自动带上，事件不需要自己声明这个字段。
-type insertMiddleware struct{ river.MiddlewareDefaults }
-
-func (*insertMiddleware) InsertMany(
-	ctx context.Context,
-	params []*rivertype.JobInsertParams,
-	doInner func(context.Context) ([]*rivertype.JobInsertResult, error),
-) ([]*rivertype.JobInsertResult, error) {
-	if id := logctx.RequestID(ctx); id != "" {
-		for _, p := range params {
-			p.Metadata = withRequestID(p.Metadata, id)
-		}
-	}
-	return doInner(ctx)
-}
-
-// withRequestID 合并进已有 metadata；已有同名键或 metadata 不是 JSON 对象时原样返回，
-// 日志关联字段不能让入队失败。
-func withRequestID(metadata []byte, id string) []byte {
-	m := map[string]json.RawMessage{}
-	if len(metadata) > 0 {
-		if err := json.Unmarshal(metadata, &m); err != nil || m == nil {
-			return metadata
-		}
-	}
-	if _, ok := m[metadataRequestID]; ok {
-		return metadata
-	}
-	m[metadataRequestID], _ = json.Marshal(id)
-	out, err := json.Marshal(m)
-	if err != nil {
-		return metadata
-	}
-	return out
-}
-
-// workMiddleware 在任务执行的 ctx 里写入关联字段：job_kind、job_id、attempt，以及发起请求的
-// request_id。这是任务日志关联字段的唯一入口，worker 不手写。
+// workMiddleware 在任务执行的 ctx 里写入关联字段：job_kind、job_id、attempt，以及入队那次请求的
+// link_trace_id。这是任务日志关联字段的唯一入口，worker 不手写。它排在 otelriver 之内，ctx 里已是这次执行的
+// work span，日志的 trace_id、span_id 由根 Handler 从 span 取。
 //
 // 任务失败和 panic 也在这里用任务 ctx 记录：river 自己的 "Job errored"/"Job panicked" 日志用的是
-// 它外层的 ctx，带不上 request_id 和 attempt。
+// 它外层的 ctx，带不上 trace_id 和 attempt。
 type workMiddleware struct {
 	river.MiddlewareDefaults
 	log *slog.Logger
@@ -65,8 +28,8 @@ type workMiddleware struct {
 
 func (m *workMiddleware) Work(ctx context.Context, job *rivertype.JobRow, doInner func(context.Context) error) error {
 	ctx = logctx.WithJob(ctx, job.Kind, job.ID, job.Attempt)
-	if id := requestIDOf(job); id != "" {
-		ctx = logctx.WithRequestID(ctx, id)
+	if id := linkTraceID(job); id != "" {
+		ctx = logctx.WithLinkTraceID(ctx, id)
 	}
 	defer func() {
 		if r := recover(); r != nil {
@@ -97,12 +60,24 @@ func (m *workMiddleware) logFailure(ctx context.Context, job *rivertype.JobRow, 
 	}
 }
 
-func requestIDOf(job *rivertype.JobRow) string {
+// linkTraceID 取入队时所在 trace 的 trace_id：otelriver 入队时开一个 insert_many span（当前 ctx 的子 span，没有
+// 父 span 时是新的根），把它的 traceparent 写进任务 metadata，执行时以 span link 指向它。执行是一条新的 trace（任务
+// 可能几小时后才执行，父子关系会让 trace 横跨很久），trace 又可能被采样丢掉，只有日志里的这个字段能把任务和入队方
+// 连起来：请求里入队的是请求的 trace_id；worker 里入队的是上一个任务这次执行的 trace_id，顺着它的 link_trace_id
+// 能追到最初的请求；定时任务和请求之外入队的，指向只有 insert_many span 的 trace，查不到其它日志。
+//
+// 自己解析 metadata 而不从 work span 取 link：不导出时 span 不记录（NeverSample），读不到 link；otelriver 的解析函数
+// 不导出。键名和格式与 otelriver 一致由 inserter_integration_test.go 的端到端测试保证。
+func linkTraceID(job *rivertype.JobRow) string {
 	var v struct {
-		RequestID string `json:"request_id"`
+		Traceparent string `json:"traceparent"`
 	}
-	if len(job.Metadata) > 0 && json.Unmarshal(job.Metadata, &v) == nil {
-		return v.RequestID
+	if len(job.Metadata) == 0 || json.Unmarshal(job.Metadata, &v) != nil || v.Traceparent == "" {
+		return ""
+	}
+	ctx := propagation.TraceContext{}.Extract(context.Background(), propagation.MapCarrier{"traceparent": v.Traceparent})
+	if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
+		return sc.TraceID().String()
 	}
 	return ""
 }

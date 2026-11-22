@@ -8,9 +8,12 @@ import (
 	"io"
 	"log/slog"
 
+	"github.com/exaring/otelpgx"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 	goredis "github.com/redis/go-redis/v9"
+	metricnoop "go.opentelemetry.io/otel/metric/noop"
+	"go.opentelemetry.io/otel/trace"
 
 	"app.local/internal/config"
 	"app.local/internal/platform/dbtx"
@@ -21,6 +24,7 @@ import (
 	"app.local/internal/platform/process"
 	"app.local/internal/platform/queue"
 	"app.local/internal/platform/redis"
+	"app.local/internal/platform/tracing"
 )
 
 // Infra 持有连接类资源，按配置决定是否创建（没配 REDIS_ADDR 就不连 Redis）。
@@ -33,6 +37,11 @@ type Infra struct {
 	// Metrics 是进程的 Registry（运行时指标和业务自定义指标），由一个端口输出：api 的前台端口、
 	// worker 的内部端口。后台端口另有自己的 Registry，不输出它，否则两个端口被抓取时会算重。
 	Metrics *prometheus.Registry
+	// Tracer 是进程的 TracerProvider（tracing.New）：HTTP、SQL、Redis、队列的 span 都从它建。不设为 otel 的全局
+	// provider：不经组合根构造的出站客户端（如微信登录）从 ctx 里的 span 取 provider。
+	Tracer trace.TracerProvider
+	// shutdownTracing 导出剩余的 span，由 Close 最后调用；只构造了部分字段的 Infra（测试）为 nil。
+	shutdownTracing func(context.Context) error
 
 	Pool *pgxpool.Pool
 	DBTx *dbtx.Handle
@@ -55,44 +64,58 @@ func newProcess(cfg *config.Config, name string, w io.Writer) (process.Identity,
 }
 
 func NewInfra(ctx context.Context, cfg *config.Config, id process.Identity, log *slog.Logger) (*Infra, error) {
+	tp, err := tracing.New(ctx, id, cfg.Tracing.OTLPEndpoint)
+	if err != nil {
+		return nil, fmt.Errorf("app: build infra: %w", err)
+	}
+	in := &Infra{
+		Config: cfg, Identity: id, Metrics: metrics.NewRuntimeRegistry(id), Logger: log, Tracer: tp,
+		shutdownTracing: func(ctx context.Context) error { return tracing.Shutdown(ctx, tp) },
+	}
+	if err := in.connect(ctx); err != nil {
+		in.Close(ctx)
+		return nil, fmt.Errorf("app: build infra: %w", err)
+	}
+	return in, nil
+}
+
+// connect 构造连接类资源；出错时由调用方 Close 释放已经建好的部分。
+func (in *Infra) connect(ctx context.Context) error {
+	cfg := in.Config
 	pool, err := postgres.NewPool(ctx, postgres.PoolConfig{
 		DSN:               cfg.DB.DSN,
 		MinConns:          cfg.DB.MinConns,
 		MaxConns:          cfg.DB.MaxConns,
 		MaxConnLifetime:   cfg.DB.MaxConnLifetime,
 		HealthCheckPeriod: cfg.DB.HealthCheckPeriod,
+		Tracer:            newPgxTracer(in.Tracer),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("app: build infra: %w", err)
+		return err
 	}
-	handle := dbtx.NewHandle(pool)
+	in.Pool = pool
+	in.DBTx = dbtx.NewHandle(pool)
+	in.Pingers = []httpserver.Pinger{in.DBTx}
 
-	insertClient, err := queue.NewClient(pool, nil, nil, log)
+	insertClient, err := queue.NewClient(pool, nil, nil, in.Logger, in.Tracer)
 	if err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("app: build infra: %w", err)
+		return err
 	}
+	in.Queue = queue.NewInserter(insertClient, in.DBTx)
 
-	in := &Infra{
-		Config:   cfg,
-		Identity: id,
-		Metrics:  metrics.NewRuntimeRegistry(id),
-		Logger:   log,
-		Pool:     pool,
-		DBTx:     handle,
-		Queue:    queue.NewInserter(insertClient, handle),
-		Pingers:  []httpserver.Pinger{handle},
+	if cfg.Redis.Addr == "" {
+		in.Logger.WarnContext(ctx, "REDIS_ADDR 未配置：缓存退回 Noop，限流按进程内存计数，多实例部署时实际额度 = 配置值 × 实例数")
+		return nil
 	}
-	if cfg.Redis.Addr != "" {
-		in.Redis = redis.NewClient(cfg.Redis.Addr, cfg.Redis.Password)
-		in.Pingers = append(in.Pingers, redis.NewPinger(in.Redis))
-	} else {
-		log.WarnContext(ctx, "REDIS_ADDR 未配置：缓存退回 Noop，限流按进程内存计数，多实例部署时实际额度 = 配置值 × 实例数")
+	if in.Redis, err = redis.NewClient(cfg.Redis.Addr, cfg.Redis.Password, in.Tracer); err != nil {
+		return err
 	}
-	return in, nil
+	in.Pingers = append(in.Pingers, redis.NewPinger(in.Redis))
+	return nil
 }
 
-// Close 逆序释放资源。
+// Close 逆序释放资源。在进程的组件（HTTP server、队列）全部停下之后调用，tracing 最后关停：
+// 排空和优雅关闭期间的 span 也要导出，最多等 3 秒，到期丢弃。
 func (in *Infra) Close(ctx context.Context) {
 	if in.Redis != nil {
 		if err := in.Redis.Close(); err != nil {
@@ -102,4 +125,15 @@ func (in *Infra) Close(ctx context.Context) {
 	if in.Pool != nil {
 		in.Pool.Close()
 	}
+	if in.shutdownTracing != nil {
+		if err := in.shutdownTracing(ctx); err != nil {
+			in.Logger.WarnContext(ctx, "tracing: shutdown did not finish, remaining spans dropped", slog.Any("error", err))
+		}
+	}
+}
+
+// newPgxTracer 记录每条 SQL 的 span：默认 span 名只取 SQL 的第一个词（SELECT、INSERT），完整语句在属性里，
+// 不记参数值。指标走 Prometheus：MeterProvider 不传时 otelpgx 退回 otel 全局 provider，所以显式传 noop。
+func newPgxTracer(tp trace.TracerProvider) *otelpgx.Tracer {
+	return otelpgx.NewTracer(otelpgx.WithTracerProvider(tp), otelpgx.WithMeterProvider(metricnoop.NewMeterProvider()))
 }

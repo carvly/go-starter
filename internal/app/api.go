@@ -17,8 +17,14 @@ import (
 	"app.local/internal/platform/ratelimit"
 )
 
-// shutdownTimeout 要大于 HTTP 优雅关闭的 15s，给它留出完成的时间。
+// shutdownTimeout 是排空之后的关停上限：要大于 HTTP 优雅关闭的 15s 和队列的强制停止，给它们留出完成的时间。
+// worker 没有网关转来的流量，不排空，直接用它；api 是排空期 + 它（apiShutdownTimeout）。进程最后还有 tracing
+// 的关停（最多 3s，在组件停下之后，见 Infra.Close），systemd 的 TimeoutStopSec 要大于三者之和。
 const shutdownTimeout = 20 * time.Second
+
+func apiShutdownTimeout(cfg *config.Config) time.Duration {
+	return cfg.HTTP.ShutdownDrain + shutdownTimeout
+}
 
 // RunAPI 运行 HTTP API 进程，阻塞到 ctx 取消或组件出错。
 // 日志写 stdout。
@@ -39,7 +45,7 @@ func RunAPI(ctx context.Context, cfg *config.Config) error {
 	if err != nil {
 		return err
 	}
-	return lifecycle.Run(ctx, shutdownTimeout, components...)
+	return lifecycle.Run(ctx, apiShutdownTimeout(cfg), components...)
 }
 
 // apiComponents 是 api 进程的 HTTP server：前台总是启动；后台只在配置了地址时启动，
@@ -49,14 +55,15 @@ func apiComponents(in *Infra, mods *Modules) ([]lifecycle.Component, error) {
 	if err != nil {
 		return nil, fmt.Errorf("app: build http server: %w", err)
 	}
-	components := []lifecycle.Component{httpserver.Component("api", e, in.Config.HTTP.Addr)}
+	drain := in.Config.HTTP.ShutdownDrain
+	components := []lifecycle.Component{httpserver.Component("api", e, in.Config.HTTP.Addr, drain)}
 
 	if adminEnabled(in, mods.adminRegistrars()) {
 		admin, err := httpserver.NewAdmin(adminServerDeps(in, mods))
 		if err != nil {
 			return nil, fmt.Errorf("app: build admin server: %w", err)
 		}
-		components = append(components, httpserver.Component("admin", admin, in.Config.HTTP.AdminAddr))
+		components = append(components, httpserver.Component("admin", admin, in.Config.HTTP.AdminAddr, drain))
 	}
 	return components, nil
 }
@@ -74,6 +81,7 @@ func apiServerDeps(in *Infra, mods *Modules) httpserver.Deps {
 		RateLimitStore: ratelimit.NewStore(in.Redis, "global", globalRate(in), in.Logger),
 		Routes:         mods.httpRegistrars(),
 		Metrics:        in.Metrics,
+		Tracer:         in.Tracer,
 	}
 }
 
@@ -87,6 +95,8 @@ func adminServerDeps(in *Infra, mods *Modules) httpserver.AdminDeps {
 		Auth:           mods.adminAuth(),
 		Static:         adminStatic,
 		Metrics:        metrics.NewRegistry(in.Identity),
+		Tracer:         in.Tracer,
+		Pingers:        in.Pingers,
 	}
 }
 

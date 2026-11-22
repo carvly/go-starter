@@ -19,7 +19,7 @@ type Config struct {
 	// if/switch 分支。
 	AppEnv   string `yaml:"app_env"`
 	LogLevel string `yaml:"log_level"`
-	// InstanceID 写进每条日志的 instance 字段，区分同一服务的多个实例。默认取主机名；
+	// InstanceID 是日志和指标 service_info 的 service_instance_id，区分同一服务的多个实例。默认取主机名；
 	// 同一台机器上跑多个实例时必须分别设置。
 	InstanceID string `yaml:"instance_id"`
 
@@ -28,7 +28,15 @@ type Config struct {
 	Redis  RedisConfig  `yaml:"redis"`
 	CORS   CORSConfig   `yaml:"cors"`
 	Argon2 Argon2Params `yaml:"argon2"`
-	Source *Source      `yaml:"-"`
+	// Tracing 只在这里读导出地址；其余 OTEL_EXPORTER_OTLP_*（headers、超时）由 exporter 直接读环境变量。
+	Tracing TracingConfig `yaml:"tracing"`
+	Source  *Source       `yaml:"-"`
+}
+
+// TracingConfig 控制 trace 是否导出。不论是否导出，每个请求和任务都有 trace_id（见 internal/platform/tracing）。
+type TracingConfig struct {
+	// OTLPEndpoint 为空时不导出、不建立任何连接；设置后全量导出，由 Collector 做尾部采样。
+	OTLPEndpoint string `yaml:"otlp_endpoint"`
 }
 
 // HTTPConfig 是 cmd/api 的 HTTP 服务器与安全/流量控制中间件配置。
@@ -51,6 +59,11 @@ type HTTPConfig struct {
 	// 必须匹配真实部署拓扑——反代来自公网 IP 段这类更复杂的拓扑需要在
 	// server.go 里换成 echo.TrustIPRange 显式指定信任网段。
 	TrustedProxy bool `yaml:"trusted_proxy"`
+
+	// ShutdownDrain 是收到停止信号后继续服务的排空期，期间响应带 Connection: close、/readyz 返回 503，
+	// 让前面的网关摘掉这个实例、关掉连接，再优雅关闭。默认 0（立即优雅关闭）；网关后的多实例部署
+	// 必须大于网关 upstream 的 keepalive_timeout 至少 1 秒（见 docs/agents/deploy-ci.md）。
+	ShutdownDrain time.Duration `yaml:"shutdown_drain"`
 
 	// GlobalRateLimit 是按 IP 的全局限流，单位：次/秒。
 	GlobalRateLimitPerSecond float64 `yaml:"global_rate_limit_per_second"`
@@ -208,10 +221,12 @@ func applyEnvOverrides(cfg *Config) error {
 	setStringSlice(&cfg.CORS.AllowOrigins, "CORS_ALLOW_ORIGINS")
 	setString(&cfg.Redis.Addr, "REDIS_ADDR")
 	setString(&cfg.Redis.Password, "REDIS_PASSWORD")
+	setString(&cfg.Tracing.OTLPEndpoint, "OTEL_EXPORTER_OTLP_ENDPOINT")
 	return errors.Join(
 		setInt64(&cfg.HTTP.BodyLimitBytes, "HTTP_BODY_LIMIT_BYTES"),
 		setDuration(&cfg.HTTP.RequestTimeout, "HTTP_REQUEST_TIMEOUT"),
 		setDuration(&cfg.HTTP.HSTSMaxAge, "HTTP_HSTS_MAX_AGE"),
+		setDuration(&cfg.HTTP.ShutdownDrain, "HTTP_SHUTDOWN_DRAIN"),
 		setBool(&cfg.HTTP.TrustedProxy, "HTTP_TRUSTED_PROXY"),
 		setBool(&cfg.HTTP.APIDocsEnabled, "HTTP_API_DOCS_ENABLED"),
 		setFloat64(&cfg.HTTP.GlobalRateLimitPerSecond, "HTTP_GLOBAL_RATE_LIMIT_PER_SECOND"),
@@ -275,6 +290,9 @@ func validate(cfg *Config) error {
 	if cfg.HTTP.RequestTimeout <= 0 {
 		return fmt.Errorf("config: HTTP_REQUEST_TIMEOUT must be > 0, got %s", cfg.HTTP.RequestTimeout)
 	}
+	if cfg.HTTP.ShutdownDrain < 0 {
+		return fmt.Errorf("config: HTTP_SHUTDOWN_DRAIN must be >= 0, got %s", cfg.HTTP.ShutdownDrain)
+	}
 	if cfg.HTTP.AdminAddr != "" && cfg.HTTP.AdminAddr == cfg.HTTP.Addr {
 		return fmt.Errorf("config: HTTP_ADMIN_ADDR must differ from HTTP_ADDR (%q): the admin server is a separate listener", cfg.HTTP.Addr)
 	}
@@ -282,7 +300,35 @@ func validate(cfg *Config) error {
 		return fmt.Errorf("config: HTTP_ADMIN_ORIGIN must be exactly what browsers send as Origin, like https://admin.example.com "+
 			"(lowercase scheme://host[:port], no default port, no path, no user info), got %q", o)
 	}
+	if e := cfg.Tracing.OTLPEndpoint; e != "" {
+		if u, err := url.Parse(e); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return fmt.Errorf("config: OTEL_EXPORTER_OTLP_ENDPOINT must be an OTLP/HTTP base URL like http://collector:4318, got %q",
+				redactedURL(e))
+		}
+	}
 	return nil
+}
+
+// redactedURL 隐藏 URL 里可能带凭据的 userinfo、query 和 fragment，解析失败时整体隐藏。
+func redactedURL(s string) string {
+	if s == "" {
+		return ""
+	}
+	u, err := url.Parse(s)
+	if err != nil {
+		return "***"
+	}
+	if u.User != nil {
+		u.User = url.User("***")
+	}
+	if u.RawQuery != "" {
+		u.RawQuery = "***"
+	}
+	u.ForceQuery = false
+	if u.Fragment != "" {
+		u.Fragment, u.RawFragment = "***", ""
+	}
+	return u.String()
 }
 
 // IsCanonicalOrigin 判断 o 是否和浏览器发送的 Origin 头逐字节相同。后台按字符串比较
@@ -302,18 +348,20 @@ func IsCanonicalOrigin(o string) bool {
 // Redacted 返回敏感字段脱敏成 "***" 的配置快照，供启动时打日志用。
 func (c *Config) Redacted() map[string]any {
 	return map[string]any{
-		"app_env":            c.AppEnv,
-		"log_level":          c.LogLevel,
-		"instance_id":        c.InstanceID,
-		"http_addr":          c.HTTP.Addr,
-		"http_internal_addr": c.HTTP.InternalAddr,
-		"http_admin_addr":    c.HTTP.AdminAddr,
-		"http_admin_origin":  c.HTTP.AdminOrigin,
-		"cors_allow_origins": c.CORS.AllowOrigins,
-		"db_dsn":             "***",
-		"db_max_conns":       c.DB.MaxConns,
-		"redis_addr":         c.Redis.Addr,
-		"redis_password":     redactedIfSet(c.Redis.Password),
+		"app_env":                     c.AppEnv,
+		"log_level":                   c.LogLevel,
+		"instance_id":                 c.InstanceID,
+		"http_addr":                   c.HTTP.Addr,
+		"http_internal_addr":          c.HTTP.InternalAddr,
+		"http_admin_addr":             c.HTTP.AdminAddr,
+		"http_admin_origin":           c.HTTP.AdminOrigin,
+		"cors_allow_origins":          c.CORS.AllowOrigins,
+		"db_dsn":                      "***",
+		"db_max_conns":                c.DB.MaxConns,
+		"redis_addr":                  c.Redis.Addr,
+		"redis_password":              redactedIfSet(c.Redis.Password),
+		"http_shutdown_drain":         c.HTTP.ShutdownDrain.String(),
+		"otel_exporter_otlp_endpoint": redactedURL(c.Tracing.OTLPEndpoint),
 	}
 }
 

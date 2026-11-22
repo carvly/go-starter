@@ -1,6 +1,6 @@
-# 可观测性：命名约定、日志、指标、健康检查
+# 可观测性：命名约定、日志、指标、tracing、健康检查
 
-事实来源：`internal/platform/process/`、`internal/platform/metrics/`、`internal/platform/httpserver/metrics.go`、`internal/platform/logger/`、`internal/kit/logctx/`、`internal/platform/buildinfo/`、`internal/platform/queue/logfields.go`、`internal/platform/httpserver/identity.go`、`internal/platform/httpserver/health.go`、`internal/platform/healthcheck/`、`internal/platform/httpserver/server.go`
+事实来源：`internal/platform/tracing/`、`internal/platform/httpserver/trace.go`、`internal/platform/oauth/wechat.go`、`internal/platform/process/`、`internal/platform/metrics/`、`internal/platform/httpserver/metrics.go`、`internal/platform/logger/`、`internal/kit/logctx/`、`internal/platform/buildinfo/`、`internal/platform/queue/logfields.go`、`internal/platform/httpserver/identity.go`、`internal/platform/httpserver/health.go`、`internal/platform/healthcheck/`、`internal/platform/httpserver/server.go`
 
 ## 命名约定：日志、指标用同一套名字
 
@@ -38,20 +38,21 @@
 - 接收外部 logger 的平台组件（HTTP server、river client）都经 `logger.Ensure` 取用：不是 `logger.New` 构造的
   logger 会被包一层，传错 logger 也不丢字段。`slog.SetDefault` 由 `newProcess` 设为根 logger；
 - `context.Value` 只放横切信息（这里的 logger 和关联字段，以及 `internal/platform/dbtx` 的事务句柄、
-  `internal/kit/uow` 的提交后回调），不传业务依赖。
+  `internal/kit/uow` 的提交后回调、`internal/platform/httpserver` 的排空标记），不传业务依赖。
 
 ### 每条日志都带的字段
 
 | 字段 | 含义 | 写入方 |
 |---|---|---|
 | `service_name`、`service_version`、`service_instance_id` | 哪个进程（`api`/`worker`）、哪个构建、哪个实例 | 根 logger 的静态字段（`process.Identity` 的 `LogAttrs`，见上面"命名约定"）；版本见下，实例是配置 `INSTANCE_ID`，默认主机名 |
-| `request_id` | 串起网关 access log、api、worker 的同一次请求 | HTTP：RequestID 中间件（请求头 `X-Request-Id`，网关传入即沿用）；任务：队列中间件 |
-| `method`、`route` | 属于哪个接口；`route` 是路由模板，没匹配上路由时不输出 | RequestID 中间件 |
+| `trace_id`、`span_id` | 全项目唯一的请求 ID：网关 access log、应用日志、trace、响应头 `X-Trace-Id`、后台操作日志同一个值；`span_id` 定位到 trace 里的哪一步。ctx 里没有 span（启动、关停）时不输出 | 根 logger 的 Handler 从 ctx 里的 span 取（见下面"tracing"），不经 `logctx` |
+| `link_trace_id` | 任务入队时所在 trace 的 `trace_id`：任务执行是一条新的 trace，经 span link 关联；trace 会被采样丢掉，日志不会，只有它能把任务和入队方连起来。请求里入队的是请求的 `trace_id`；worker 里入队的是上一个任务这次执行的 `trace_id`（顺着它的 `link_trace_id` 追到请求）；定时任务和请求之外入队的指向只有入队 span 的 trace，查不到其它日志 | 队列执行中间件，从任务 metadata 的 `traceparent` 解析 |
+| `method`、`route` | 属于哪个接口；`route` 是路由模板，没匹配上路由时不输出；`method` 的非标准方法归成 `_OTHER`，与指标标签同值 | 请求入口中间件（`internal/platform/httpserver/trace.go`） |
 | `user_id` / `staff_id` | 前台用户 / 后台员工 | `httpserver.SetUserSession` / `SetStaffSession`：两种鉴权都只经它们写入身份。没有登录态、但处理的是某个用户的路径（刷新令牌、注销任务）用 `logctx.WithUserID` 写进 ctx |
 | `job_kind`、`job_id`、`attempt` | 哪个任务、第几次执行；`job_kind` 与 river 自己日志里的键相同 | 队列执行中间件；孤儿任务告警只带 `job_kind` |
 
-这些字段由入口经 `logctx` 的 `With*` 函数（`WithRequestID`、`WithRoute`、`WithUserID`、`WithStaffID`、`WithJob`、
-`WithJobKind`）写入 ctx，**业务代码不手写**。键名常量在 `logctx`、`process` 里都不导出，其它包引用不到；slog 自己的
+这些字段由入口经 `logctx` 的 `With*` 函数（`WithRoute`、`WithUserID`、`WithStaffID`、`WithJob`、`WithJobKind`、
+`WithLinkTraceID`）写入 ctx（`trace_id`、`span_id` 由根 Handler 从 span 取），**业务代码不手写**。键名常量在 `logctx`、`process` 里都不导出，其它包引用不到；slog 自己的
 `time`、`level`、`msg`、`source` 同样不能当字段名。手写只能写字面量，sloglint 的 `forbidden-keys` 检查字面量
 （`.golangci.yml`；它不解析别的包的常量，所以键名不能导出），只放行定义和写入它们的 `internal/kit/logctx`、
 `internal/platform/logger`、`internal/platform/process`。来自 ctx 的字段与调用方显式写的同名时根 Handler 不重复输出，
@@ -62,8 +63,8 @@
   （`deploy/Dockerfile` 的 `VERSION` 构建参数，镜像构建不传时是 `dev`）；没注入时取 Go 嵌入的 VCS 提交前 12 位
   （本地在仓库里 `go build` 时有，有未提交改动加 `-dirty`），都没有时是 `dev`；
 - 同一台机器上跑同一服务的多个实例时，必须分别设置 `INSTANCE_ID`，否则 `service_instance_id` 相同；
-- 跨进程传播：入队时队列中间件把 `logctx.RequestID(ctx)` 写进任务 metadata 的 `request_id`，执行时从
-  metadata 读回；事件不声明 request_id 字段；
+- 跨进程传播：入队时 otelriver 把当前 span 的 `traceparent` 写进任务 metadata，执行时以 span link 指向它，
+  日志的 `link_trace_id` 由此而来；事件不声明 trace 字段；
 - 不用 `slog` 的 `WithGroup`：分组之后，关联字段会落进分组里，按顶层字段检索不到。
 - **脱敏**：不把密码、token、`Authorization` header 整体写进日志，只记 user_id、长度
   这类不构成凭据的信息；
@@ -96,12 +97,12 @@
 - 一个错误只记一次：能返回就返回，由处理它的那一层记录。HTTP 请求返回的错误由错误处理器统一记录
   （`"http request failed"`，带 `status`、`code`、`error`，业务错误另带 `error_kind`，panic 另带 `stack`；级别按状态码，
   见下面"级别"），handler 和 Service 不再重复记；
-  worker 返回的错误和 panic 由队列执行中间件用任务 ctx 记录（带 `request_id`、`attempt`：river 自己的
+  worker 返回的错误和 panic 由队列执行中间件用任务 ctx 记录（带 `trace_id`、`link_trace_id`、`attempt`：river 自己的
   `Job errored`/`Job panicked` 日志带不上它们）——还会重试记 Warn（`"queue: job failed, will retry"`），
   最后一次记 Error（`"queue: job failed, no retries left"`），`river.JobCancel` 记 Warn，`river.JobSnooze` 不记；
   river 另把错误写进任务的 `errors` 列并按策略重试（查 `river_job` 表），worker 不再重复记；只有吞掉错误继续执行（降级、尽力而为的副作用）时才在原地记 Warn；
 - 不在每个请求上打 Info：应用不记访问日志，请求量、耗时、状态码分布看指标，单个请求看网关的访问日志
-  （按 `request_id` 关联）。
+  （按 `trace_id` 关联：网关的 `$request_id` 经 `X-Trace-Id` 传给应用，就是这次请求的 `trace_id`）。
 
 ### 级别
 
@@ -122,7 +123,7 @@ HTTP 错误处理器按状态码定级别（`internal/platform/httpserver/errors
 
 ```bash
 journalctl -u '<服务名>@*' -f                                     # 跟踪全部实例
-journalctl -u '<服务名>@*' -o cat --since -1h | jq -c 'select(.request_id=="<id>")'
+journalctl -u '<服务名>@*' -o cat --since -1h | jq -c 'select(.trace_id=="<id>" or .link_trace_id=="<id>")'
 journalctl -u '<服务名>@*' -p err --since -1h -o cat            # 只看 Error（-p warning 含 Warn）
 journalctl -u '<服务名>@*' -g '"user_id":"<id>"'                   # -g 按正则匹配日志内容
 journalctl -u '<服务名>@*' -o json | jq -r '[._SYSTEMD_UNIT, .MESSAGE] | @tsv'   # 带上来自哪个实例
@@ -138,6 +139,14 @@ journalctl -u '<服务名>@*' -o json | jq -r '[._SYSTEMD_UNIT, .MESSAGE] | @tsv
   进程的 Registry（`metrics.NewRuntimeRegistry`，由 `NewInfra` 构造，挂在 `Infra.Metrics`）带 Go 运行时、进程指标、
   `service_info` 和业务自定义指标，由 api 的前台端口、worker 的内部端口（`HTTP_INTERNAL_ADDR`，默认 `:9090`）输出；
   api 的后台端口用自己的 Registry（`metrics.NewRegistry`），只有 `service_info` 和后台的 HTTP 指标；
+- **两种 Registry 的归属不同**：`Infra.Metrics` 属于进程，每个进程**恰好由一个端口**输出（组合根 `internal/app` 决定是哪个）；
+  端口自己的 Registry 只装这个端口的 HTTP 指标。由此：
+  - 后台模块的自定义指标也注册进 `Infra.Metrics`，在 api 的**前台端口**输出，不在后台端口；
+  - 后台独立部署（单独的 api 实例只承接后台流量，网关不往它的前台端口转发）时，进程仍会启动前台 server，运行时指标和
+    自定义指标仍在前台端口：这些实例的前台端口也要抓取，否则看不到它们的运行时和业务指标；
+  - 以后若让 api 进程能只跑后台 server（不启动前台），组合根要把 `Infra.Metrics` 改由后台端口输出（`adminServerDeps`
+    的 `Metrics` 用 `in.Metrics`，不再 `metrics.NewRegistry`），保持"恰好一个端口"；反过来不能让两个端口都输出它，
+    否则按服务求和会算重。`internal/app/api_test.go` 的 `TestServerDeps_ProcessRegistryOnExactlyOnePort` 固定了这一点；
 - `service_info` 恒为 1，标签是进程身份，每个端口都有：join 按 `job`/`instance` 匹配，缺了它这个端口的指标就过滤不到；
 - `/metrics` 由 `metrics.Handler` 输出，客户端在 `Accept` 里要求时用 OpenMetrics 格式（exemplar 只在这个格式里出现）；
 - 告警规则不在这个仓库里，由使用方在自己的监控平台配置；
@@ -153,12 +162,15 @@ http_server_request_duration_seconds{server, method, route, status}
 ```
 
 - `_count` 就是请求数，错误率按 `status` 算，不另设计数器；`server` 是 `api` 或 `admin`；
-- 中间件在链的最外层：被限流（429）、请求体超限（413）、panic（500）的请求都计入。handler 返回的错误由它交给
+- 中间件紧贴在请求入口之内（入口建好 span 之后）：被限流（429）、请求体超限（413）、panic（500）的请求都计入。handler 返回的错误由它交给
   `HTTPErrorHandler` 渲染，耗时包含写出错误响应的时间，`status` 是实际写出的状态码；Recover 原样再抛的
   `http.ErrAbortHandler` 按 500 计入后继续抛；`/healthz`、`/readyz`、`/metrics` 不计入；
 - `method` 只取标准方法，其余归为 `_OTHER`：方法名来自客户端，不能任意增加标签值。归一化在入口（`methodName`），
   日志的 `method` 字段同值；
-- 包装了响应又没实现 `Unwrap` 时取不到实际写出的状态码，`status` 按错误推算（`StatusOf`），不会把错误请求记成 200。
+- 包装了响应又没实现 `Unwrap` 时取不到实际写出的状态码，`status` 按错误推算（`StatusOf`），不会把错误请求记成 200；
+- span 被采样（配置了导出）时，观测值带 `trace_id` exemplar，Grafana 能从指标跳到这条 trace；不导出时不带，
+  否则 exemplar 指向不存在的 trace。导出时 trace 的去留由 Collector 尾部采样决定：慢的和出错的全保留，高延迟桶的
+  exemplar 都能跳转，低延迟桶的可能指向已丢弃的 trace。exemplar 只在 OpenMetrics 格式里输出，抓取端要协商这个格式。
 
 ### 路径一律用路由模板
 
@@ -166,14 +178,55 @@ http_server_request_duration_seconds{server, method, route, status}
   `sum(rate(http_server_request_duration_seconds_count{method="GET", route="/v1/me"}[5m]))`。没匹配上路由的
   请求 `route` 为空，扫描器的乱扫路径不会各占一条时间序列；
   `server_test.go` 的 `TestServer_MetricsRouteLabelIsRouteTemplate` 固定了这一点；
-- 自定义指标同样不把 ID、查询参数、用户输入放进标签，注册进 `Infra.Metrics`（api 进程的在前台端口输出）。"某个具体对象被访问了多少次"查日志，不进指标。
+- 自定义指标同样不把 ID、查询参数、用户输入放进标签，注册进 `Infra.Metrics`（api 进程的在前台端口输出，后台模块的也一样，见上面"两种 Registry 的归属不同"）。"某个具体对象被访问了多少次"查日志，不进指标。
+
+## tracing
+
+`internal/platform/tracing` 构造进程的 TracerProvider，组合根在 `NewInfra` 里装配（挂在 `Infra.Tracer`，不设为 otel 的
+全局 provider：不经组合根构造的出站客户端从 ctx 里的 span 取 provider，见微信调用），`Infra.Close` 在所有组件停下之后最后关停（最多 3 秒，导出不完的丢弃）。
+
+- **trace_id 始终存在**：始终是 SDK provider。`OTEL_EXPORTER_OTLP_ENDPOINT` 为空时 `NeverSample`、不挂 exporter，不建立
+  任何连接，但 SDK 先生成 ID 再做采样决定，日志照样有 `trace_id`；设置后全量导出（`AlwaysSample`），导出量由 Collector
+  的尾部采样控制。其余 `OTEL_EXPORTER_OTLP_*`（headers、超时）由 exporter 直接读环境变量；
+- resource 只来自 `process.Identity`（`service.name`、`service.version`、`service.instance.id`），与日志、指标同一来源，
+  不读 `OTEL_SERVICE_NAME`、`OTEL_RESOURCE_ATTRIBUTES`；
+- **请求 ID 的来源**（请求入口中间件 `internal/platform/httpserver/trace.go`）：只有 `HTTP_TRUSTED_PROXY=true`（在网关后）
+  时才接受上游的 `traceparent`（以后拆出的内部服务之间），其次是 `X-Trace-Id`（网关的 `$request_id`，必须是 32 位十六进制
+  且非全零，否则忽略），都没有时随机生成。网关给的 ID 经自定义 IDGenerator 直接成为根 span 的 `trace_id`，根 span 没有
+  伪造的父 span。直连时一律新生成：客户端不能指定 trace_id，把自己的请求混进别人的日志；
+- 网关因连接错误把请求重试到另一个实例（`proxy_next_upstream`）时，两个实例收到同一个 `$request_id`，同一条 trace 下
+  会有两个根 span、`instance` 不同：这是同一个网关请求的两次尝试，不是执行了两遍。`trace_id` 的含义是"网关请求"，
+  网关 access log 只有一行，`upstream` 字段列出两个实例；
+- 响应头 `X-Trace-Id` 写回当前 `trace_id`，前台 CORS 在 `ExposeHeaders` 里放行它，跨域的前端出错时能展示给用户、报给客服；
+- 需要持久化这个 ID 的适配器（后台操作日志）用 `httpserver.TraceID(ctx)` 取值，模块不 import otel；
+
+插桩只在边界，domain 不建 span：
+
+| 边界 | 做法 |
+|---|---|
+| 入站 HTTP | 请求入口中间件（Echo 的 `Use` 链最外层）。Echo 先匹配路由再执行 `Use` 链，span 名直接是 `"{method} {路由模板}"`，没匹配上路由时只用 method；`/healthz`、`/readyz`、`/metrics` 不建 span（与全局限流同一个 `healthEndpointSkipper`）。5xx 和 panic 标 Error，4xx 不标。被限流（429）和没匹配路由（404）的请求也建 span：日志和 `X-Trace-Id` 要用它的 trace_id，且未标错的 span 会被尾部采样按比例丢弃；洪泛流量由网关限流挡住，不靠应用少建 span |
+| PostgreSQL | `otelpgx` 设到连接池的 `Tracer`（`postgres.PoolConfig.Tracer`）：span 名是 SQL 的第一个词，完整语句在属性里，不记参数值 |
+| Redis | `redisotel.InstrumentTracing`（`internal/platform/redis`），不记命令参数（键里有 ID，值可能是业务数据） |
+| 微信等外部 HTTP | 自己建 client span，只记方法、域名、路径、状态码（`internal/platform/oauth/wechat.go`）；非 2xx 和 `errcode`≠0 都标错（微信的业务错误 HTTP 状态恒为 200），provider 取自 ctx 里的 span（`trace.SpanFromContext(ctx).TracerProvider()`）。不用 `otelhttp.NewTransport`：它把完整 URL 记进 `url.full` 且不能配置脱敏，微信的查询参数里有 `appid`、`secret`（长期有效的应用凭据）和用户的 `access_token`。也不向外部服务传播 `traceparent` |
+| river | `otelriver` 排在队列中间件的最外层（`EnableTracePropagation`）：入队时把 `traceparent` 写进任务 metadata，执行时建 work span（名为 `river.work/<kind>`）并以 span link 指向入队的请求。任务执行是一条新的 trace：任务可能几小时后才执行，父子关系会让 trace 横跨很久，尾部采样也等不了 |
+
+- span 名和属性只用由服务端决定、取值有限的值（路由模板、归一化后的方法、状态码、任务类型），不放实体 ID 和客户端可任意
+  取值的内容（原始路径、查询参数、请求头、请求体字段）；
+- 错误的完整信息只写在日志里，span 只标状态，经 `trace_id` 关联；不把业务事件写成 span event。插桩库（otelpgx、redisotel、
+  otelriver）会把 `err.Error()` 写进状态描述和 `exception` 事件，`internal/platform/tracing` 的 provider 在交给 exporter
+  之前统一去掉（`errorTextRemover`），插桩处不用各自处理；
+- otelpgx、otelriver 不传 MeterProvider 时退回 otel 全局 provider，两处都显式传 noop（`newPgxTracer`、`queue.NewClient`），
+  指标只走 Prometheus；
+- Collector 的尾部采样：出错的全保留、慢的全保留、其余按比例。一条 trace 只出自一个进程，每台机器本机的 Alloy 就能看全，
+  不需要按 trace_id 负载均衡；示例见 `deploy/baremetal/alloy/config.alloy`。
 
 ## 健康检查
 
 - `/healthz`：liveness，恒定 200，不查依赖。api、worker 和后台 server 都有；
 - `/readyz`：readiness，逐个 Ping 依赖（数据库，配置了 Redis 时还有 Redis），任一失败
-  返回 503。只有 api 的前台端口有；worker 没有"要不要把流量路由过来"这个概念，后台
-  server 和前台在同一个进程里，不单独挂；
+  返回 503。所在 server 处于排空期（`HTTP_SHUTDOWN_DRAIN`，见 [deploy-ci.md](deploy-ci.md)）时直接返回 503
+  （`code: draining`）：`httpserver.Component` 在请求 ctx 里标记排空，由 `RegisterReadyz` 判断。api 的前台和后台端口
+  都挂（网关按端口主动探测）；worker 没有"要不要把流量路由过来"这个概念，不挂；
 - 依赖列表在 `internal/app/infra.go` 的 `Pingers`；
 - distroless 镜像里没有 curl，Dockerfile 的 HEALTHCHECK 用二进制自己的 `healthcheck`
   子命令（`internal/platform/healthcheck`）。纯 docker/compose 判定 unhealthy 后不会

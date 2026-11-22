@@ -1,0 +1,27 @@
+# api 实例（%i 为 a、b），见 docs/agents/deploy-ci.md 的"裸机双实例发布"。
+# 端口在 /etc/app/api-%i.env：a 是 HTTP_ADDR=127.0.0.1:8080 HTTP_ADMIN_ADDR=127.0.0.1:8081，
+# b 是 8082、8083；必须与 OpenResty 的 upstream、Alloy 的抓取目标、rollout.sh 的端口一致。
+[Unit]
+Description=app api (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=app
+Group=app
+EnvironmentFile=/etc/app/app.env
+EnvironmentFile=/etc/app/api-%i.env
+# HTTP_SHUTDOWN_DRAIN 必须 >= OpenResty upstream 的 keepalive_timeout(4s) + 1s，且覆盖主动检查摘除实例的时间（约 3s）。
+# %H 是主机名：INSTANCE_ID 即日志的 service_instance_id，多台机器时也不重复。
+Environment=APP_ENV=production HTTP_TRUSTED_PROXY=true HTTP_SHUTDOWN_DRAIN=6s INSTANCE_ID=%H-api-%i
+ExecStart=/opt/app/current/api
+KillSignal=SIGTERM
+# 关停上限：排空 6s + 20s + tracing 关停 3s = 29s，留余量。
+TimeoutStopSec=40
+Restart=on-failure
+RestartSec=2
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

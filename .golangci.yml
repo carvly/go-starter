@@ -21,7 +21,7 @@ linters:
     nolintlint:
       require-specific: true
       require-explanation: true
-    # 日志关联字段（request_id、user_id、任务 kind 等）存在 ctx 里，由根 Handler 输出时补上；
+    # 日志关联字段（trace_id、user_id、任务 kind 等）存在 ctx 里，由根 Handler 输出时补上；
     # 不带 ctx 的 Info/Error 会悄悄丢掉它们，所以一律用 InfoContext/ErrorContext。
     # msg 是固定短语、字段名是 snake_case，才能按 msg 聚合、按字段名检索（见 docs/agents/observability.md）。
     sloglint:
@@ -32,14 +32,17 @@ linters:
       attr-only: true
       # 不用 slog 的全局函数：logger 从 ctx 取（logctx.From），测试和组件才能换掉它。
       no-global: all
-      # 这些字段由 slog 自身（time、level、msg、source）或入口（internal/kit/logctx 与 process.Identity）写入；
+      # 这些字段由 slog 自身（time、level、msg、source）或入口写入：trace_id、span_id 由根 Handler 从 span 取
+      # （internal/platform/logger），其余经 internal/kit/logctx 的 With* 或 process.Identity 写入；
       # 手写会在同一行 JSON 里出现重复的键，多数解析器只保留后一个。
       forbidden-keys:
         - time
         - level
         - msg
         - source
-        - request_id
+        - trace_id
+        - span_id
+        - link_trace_id
         - user_id
         - staff_id
         - method

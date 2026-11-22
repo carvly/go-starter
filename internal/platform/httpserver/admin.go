@@ -13,6 +13,7 @@ import (
 	"github.com/labstack/echo/v5"
 	"github.com/labstack/echo/v5/middleware"
 	"github.com/prometheus/client_golang/prometheus"
+	"go.opentelemetry.io/otel/trace"
 
 	"app.local/api"
 	"app.local/internal/config"
@@ -53,6 +54,10 @@ type AdminDeps struct {
 	// Metrics 是后台端口自己的 Registry，不能与前台共用：两个端口各自被抓取，内容重复会让求和算重。
 	// 为 nil 时用一个空的。
 	Metrics *prometheus.Registry
+	// Tracer 与前台同一个进程的 TracerProvider，必填。
+	Tracer trace.TracerProvider
+	// Pingers 是 /readyz 检查的依赖，与前台相同：网关按端口探测，后台端口要有自己的 /readyz。
+	Pingers []Pinger
 }
 
 // NewAdmin 构造后台 server：与前台共用中间件链，但不开 CORS（同源部署），
@@ -71,6 +76,7 @@ func NewAdmin(deps AdminDeps) (*echo.Echo, error) {
 		CSP:            adminCSP,
 		Name:           "admin",
 		Metrics:        deps.Metrics,
+		Tracer:         deps.Tracer,
 		// 前端的静态文件来自内存里的构建产物，冷启动打开页面就要并发加载几十个，计入按 IP 的
 		// 全局限流会让页面加载一半；限流只管接口。
 		SkipRateLimit: func(c *echo.Context) bool { return deps.Static != nil && c.Path() == spaRoute },
@@ -85,6 +91,7 @@ func NewAdmin(deps AdminDeps) (*echo.Echo, error) {
 		register(g)
 	}
 	RegisterHealthz(e)
+	RegisterReadyz(e, deps.Pingers)
 	if err := registerAPIDocs(e, deps.HTTP.APIDocsEnabled, "/admin.yaml", api.AdminSpec); err != nil {
 		return nil, fmt.Errorf("configure admin server: API docs: %w", err)
 	}

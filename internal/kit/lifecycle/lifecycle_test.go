@@ -126,3 +126,42 @@ func TestRun_ComponentIgnoresStop_ReturnsStopTimeout(t *testing.T) {
 		t.Fatalf("Run() error = %v, want ErrStopTimeout", err)
 	}
 }
+
+// ctxProbe 记下 Start 收到的 ctx 取消后 Failed 的结果。
+type ctxProbe struct {
+	failed chan bool
+}
+
+func (p *ctxProbe) Name() string { return "probe" }
+
+func (p *ctxProbe) Start(ctx context.Context) error {
+	<-ctx.Done()
+	p.failed <- lifecycle.Failed(ctx)
+	return nil
+}
+
+func (p *ctxProbe) Stop(context.Context) error { return nil }
+
+func TestFailed_DistinguishesComponentErrorFromStopSignal(t *testing.T) {
+	t.Run("组件出错", func(t *testing.T) {
+		p := &ctxProbe{failed: make(chan bool, 1)}
+		_ = lifecycle.Run(t.Context(), time.Second, p, &fakeComponent{name: "bad", exitWith: errors.New("boom")})
+		if !<-p.failed {
+			t.Error("Failed = false, want true")
+		}
+	})
+	t.Run("停止信号", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		p := &ctxProbe{failed: make(chan bool, 1)}
+		cancel()
+		if err := lifecycle.Run(ctx, time.Second, p); err != nil {
+			t.Fatal(err)
+		}
+		if <-p.failed {
+			t.Error("Failed = true, want false")
+		}
+	})
+	if lifecycle.Failed(t.Context()) {
+		t.Error("未取消的 ctx 不算 Failed")
+	}
+}

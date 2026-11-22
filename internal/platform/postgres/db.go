@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -17,6 +18,8 @@ type PoolConfig struct {
 	MaxConns          int32
 	MaxConnLifetime   time.Duration
 	HealthCheckPeriod time.Duration
+	// Tracer 记录每条 SQL 的 span（组合根传入 otelpgx，不带参数值）；为 nil 时不记录。
+	Tracer pgx.QueryTracer
 }
 
 // NewPool 构造一个 *pgxpool.Pool。
@@ -39,6 +42,9 @@ func NewPool(ctx context.Context, cfg PoolConfig) (*pgxpool.Pool, error) {
 	}
 	if cfg.HealthCheckPeriod > 0 {
 		poolCfg.HealthCheckPeriod = cfg.HealthCheckPeriod
+	}
+	if cfg.Tracer != nil {
+		poolCfg.ConnConfig.Tracer = cfg.Tracer
 	}
 
 	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)

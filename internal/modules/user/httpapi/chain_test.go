@@ -17,6 +17,7 @@ import (
 	"app.local/internal/modules/user/httpapi"
 	"app.local/internal/platform/httpserver"
 	"app.local/internal/platform/oauth"
+	"app.local/internal/platform/tracing"
 )
 
 // 第三方登录通用链路：provider 声明的能力一定被流程生成、传递并在回调时取回；未声明时什么都不生成。
@@ -239,6 +240,7 @@ func TestTrustedIdentity_SessionOperationsUnavailable(t *testing.T) {
 	h := httpapi.NewHandler(httpapi.Deps{OAuth: oauth.Registry{"plain": {Provider: stub}}, PublicBaseURL: "https://api.example.com"})
 	pass := func(next echo.HandlerFunc) echo.HandlerFunc { return next }
 	e, err := httpserver.New(httpserver.Deps{
+		Tracer: tracing.Disabled(),
 		Logger: slog.New(slog.DiscardHandler),
 		HTTP:   config.HTTPConfig{BodyLimitBytes: 1 << 20, RequestTimeout: 5 * time.Second, GlobalRateLimitPerSecond: 1000},
 		CORS:   config.CORSConfig{AllowOrigins: []string{"https://app.example.com"}},

@@ -117,7 +117,7 @@ CREATE TABLE staff_audit_logs (
     target TEXT NOT NULL,
     result TEXT NOT NULL,
     ip TEXT NOT NULL,
-    request_id TEXT NOT NULL,
+    trace_id TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT pk_staff_audit_logs PRIMARY KEY (id)
 );
@@ -138,5 +138,5 @@ COMMENT ON COLUMN staff_audit_logs.action IS '动作：请求方法 + 路由模�
 COMMENT ON COLUMN staff_audit_logs.target IS '目标：路径参数（如被操作的员工 ID），没有时为空字符串；不记录请求体';
 COMMENT ON COLUMN staff_audit_logs.result IS '结果：HTTP 状态码，或登录、CLI 的结果说明';
 COMMENT ON COLUMN staff_audit_logs.ip IS '客户端 IP；CLI 操作为空字符串';
-COMMENT ON COLUMN staff_audit_logs.request_id IS '请求 ID，与应用日志关联；CLI 操作为空字符串';
+COMMENT ON COLUMN staff_audit_logs.trace_id IS '请求的 trace_id，与网关访问日志、应用日志、trace 关联；CLI 操作为空字符串';
 COMMENT ON COLUMN staff_audit_logs.created_at IS '发生时间';

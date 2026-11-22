@@ -166,7 +166,7 @@
   </g>
   </svg>
   </div>
-  <p class="note">api 和 worker 是同一套代码的两个入口，都用 <code>buildModules</code> 构造 user、staff，各自按配置连 Postgres 和 Redis。api 注册前台路由；配置了 <code>HTTP_ADMIN_ADDR</code> 时再起后台 server，页面经 <code>go:embed</code> 打进二进制。api 只入队、不消费任务，api 二进制还带 CLI 子命令（如 <code>api staff create</code>），执行完就退出，不起 server。worker 只注册任务和定时任务，<code>:9090</code> 只有健康检查和指标。注销时 user 在同一个事务里更新账号并把 <code>user_deleted</code> 写进 <code>river_job</code>，worker 取到后调用组合根登记的清理器，两个进程之间不直接通信。没配 Redis 时，缓存退化为 Noop，限流退化为进程内存计数。</p>
+  <p class="note">api 和 worker 是同一套代码的两个入口，都用 <code>buildModules</code> 构造 user、staff，各自按配置连 Postgres 和 Redis。api 注册前台路由；配置了 <code>HTTP_ADMIN_ADDR</code> 时再起后台 server，页面经 <code>go:embed</code> 打进二进制。api 只入队、不消费任务，api 二进制还带 CLI 子命令（如 <code>api staff create</code>），执行完就退出，不起 server。worker 只注册任务和定时任务，<code>:9090</code> 只有健康检查和指标。注销时 user 在同一个事务里更新账号并把 <code>user_deleted</code> 写进 <code>river_job</code>，worker 取到后调用组合根登记的清理器，两个进程之间不直接通信。没配 Redis 时，缓存退化为 Noop，限流退化为进程内存计数。图中省略了两条可观测性的边：监控系统抓取各端口的 <code>/metrics</code>；配置了 <code>OTEL_EXPORTER_OTLP_ENDPOINT</code> 时，两个进程把 trace 经 OTLP 导出到 Collector（可选，没配时不建立连接，日志照样有 <code>trace_id</code>）。worker 执行任务时的 trace 以 span link 指向入队的请求，仍然只经 Postgres（任务 metadata）交接。</p>
 </div>
 </body>
 </html>

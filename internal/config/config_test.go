@@ -203,6 +203,31 @@ func TestLoad_AdminServer(t *testing.T) {
 	})
 }
 
+func TestLoad_ShutdownDrain(t *testing.T) {
+	setRequiredEnv(t)
+	cfg, err := config.Load()
+	if err != nil || cfg.HTTP.ShutdownDrain != 0 {
+		t.Fatalf("默认排空期 = %v, err = %v, want 0", cfg.HTTP.ShutdownDrain, err)
+	}
+	t.Setenv("HTTP_SHUTDOWN_DRAIN", "6s")
+	if cfg, err = config.Load(); err != nil || cfg.HTTP.ShutdownDrain != 6*time.Second {
+		t.Fatalf("排空期 = %v, err = %v, want 6s", cfg.HTTP.ShutdownDrain, err)
+	}
+	t.Setenv("HTTP_SHUTDOWN_DRAIN", "-1s")
+	if _, err := config.Load(); err == nil {
+		t.Fatal("负的排空期应被拒绝")
+	}
+}
+
+func TestLoad_TracingEndpoint(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:4318")
+	cfg, err := config.Load()
+	if err != nil || cfg.Tracing.OTLPEndpoint != "http://127.0.0.1:4318" {
+		t.Fatalf("OTLPEndpoint = %q, err = %v", cfg.Tracing.OTLPEndpoint, err)
+	}
+}
+
 func TestLoad_APIDocsEnabled_CanBeEnabledByEnv(t *testing.T) {
 	setRequiredEnv(t)
 	t.Setenv("HTTP_API_DOCS_ENABLED", "true")
@@ -270,5 +295,41 @@ func TestLoad_InstanceIDDefaultsToHostnameAndEnvOverrides(t *testing.T) {
 	}
 	if cfg.InstanceID != "api-b" || cfg.Redacted()["instance_id"] != "api-b" {
 		t.Errorf("InstanceID = %q, Redacted = %v", cfg.InstanceID, cfg.Redacted()["instance_id"])
+	}
+}
+
+func TestLoad_OTLPEndpoint(t *testing.T) {
+	t.Run("带凭据的地址在启动日志里脱敏", func(t *testing.T) {
+		setRequiredEnv(t)
+		t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "https://user:token@collector.example.com:4318")
+		cfg, err := config.Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, _ := cfg.Redacted()["otel_exporter_otlp_endpoint"].(string)
+		if strings.Contains(got, "token") || strings.Contains(got, "user") || !strings.Contains(got, "collector.example.com:4318") {
+			t.Errorf("otel_exporter_otlp_endpoint = %q", got)
+		}
+	})
+	t.Run("查询参数和 fragment 在启动日志里脱敏", func(t *testing.T) {
+		setRequiredEnv(t)
+		t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "https://collector.example.com/otlp?api_key=secret-key#frag-secret")
+		cfg, err := config.Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, _ := cfg.Redacted()["otel_exporter_otlp_endpoint"].(string)
+		if strings.Contains(got, "secret") || !strings.Contains(got, "collector.example.com/otlp") {
+			t.Errorf("otel_exporter_otlp_endpoint = %q", got)
+		}
+	})
+	for _, bad := range []string{"collector:4318", "grpc://collector:4317", "http://"} {
+		t.Run("拒绝 "+bad, func(t *testing.T) {
+			setRequiredEnv(t)
+			t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", bad)
+			if _, err := config.Load(); err == nil {
+				t.Errorf("OTEL_EXPORTER_OTLP_ENDPOINT=%q 应在启动时报错", bad)
+			}
+		})
 	}
 }

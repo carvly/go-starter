@@ -11,6 +11,7 @@ import (
 
 	"app.local/internal/platform/ratelimit"
 	"app.local/internal/platform/redis"
+	"app.local/internal/platform/tracing"
 )
 
 func discardLogger() *slog.Logger { return slog.New(slog.DiscardHandler) }
@@ -76,7 +77,10 @@ func TestRedisStore_FailsOpenQuicklyWhenRedisHangs(t *testing.T) {
 			t.Cleanup(func() { _ = conn.Close() })
 		}
 	}()
-	client := redis.NewClient(ln.Addr().String(), "")
+	client, err := redis.NewClient(ln.Addr().String(), "", tracing.Disabled())
+	if err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() { _ = client.Close() })
 
 	s := ratelimit.NewStore(client, "test", ratelimit.Limit{Rate: 1, Period: time.Minute, Burst: 1}, discardLogger())

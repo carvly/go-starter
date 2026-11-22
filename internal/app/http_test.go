@@ -16,6 +16,7 @@ import (
 	"app.local/internal/modules/user/httpapi"
 	"app.local/internal/platform/httpserver"
 	"app.local/internal/platform/oauth"
+	"app.local/internal/platform/tracing"
 )
 
 func newPipelineTestAPI(t *testing.T) *echo.Echo {
@@ -35,6 +36,7 @@ func newPipelineTestAPI(t *testing.T) *echo.Echo {
 		}
 	}
 	e, err := httpserver.New(httpserver.Deps{
+		Tracer: tracing.Disabled(),
 		Logger: discardLogger(),
 		HTTP:   cfg.HTTP,
 		CORS:   cfg.CORS,

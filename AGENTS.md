@@ -18,7 +18,7 @@
 | 后台员工、角色权限、操作日志、应急恢复 | [`internal/modules/staff/docs/staff.md`](internal/modules/staff/docs/staff.md) |
 | 后台前端（`web/admin/`）、改 `api/admin.yaml` 后生成客户端 | [`docs/agents/admin.md`](docs/agents/admin.md) |
 | 改架构图（`docs/diagrams/`），或改了图里画的模块、依赖、进程拓扑 | [`docs/agents/diagrams.md`](docs/agents/diagrams.md) |
-| 日志、指标、健康检查 | [`docs/agents/observability.md`](docs/agents/observability.md) |
+| 日志、指标、tracing、健康检查 | [`docs/agents/observability.md`](docs/agents/observability.md) |
 | 配置、Dockerfile/compose、CI、依赖版本 | [`docs/agents/deploy-ci.md`](docs/agents/deploy-ci.md) |
 | 创建业务项目、开发业务模块、需要改 starter | [`docs/agents/project.md`](docs/agents/project.md) |
 | starter 发版与业务项目升级 | [`docs/agents/upgrade.md`](docs/agents/upgrade.md) |

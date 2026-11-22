@@ -50,8 +50,8 @@
   发布构建必须传；
 - **网关只转发业务路径**。`/healthz`、`/readyz`、`/metrics` 不需要登录，经网关转发会暴露版本号、主机名、运行时信息
   和依赖是否可用；探活、发布脚本、指标采集在内网直接访问端口。前台按白名单只转发 `/v1/`，其余返回 404；后台前端是
-  单页应用，`/` 必须转发；后台端口上 `/admin/v1` 之外的根路径只有前端页面、`/healthz`、`/metrics`、`/docs`、
-  `/admin.yaml`，网关按精确匹配拦掉 `/healthz`、`/metrics`，生产环境再拦文档。后台端口新增根路径时同步这里和网关配置
+  单页应用，`/` 必须转发；后台端口上 `/admin/v1` 之外的根路径只有前端页面、`/healthz`、`/readyz`、`/metrics`、`/docs`、
+  `/admin.yaml`，网关按精确匹配拦掉 `/healthz`、`/readyz`、`/metrics`，生产环境再拦文档。后台端口新增根路径时同步这里和网关配置
   （`TestAdmin_RoutesOutsideAPIPrefix` 会提醒）。网关不按来源 IP 限制：`/admin/v1` 靠员工会话和逐操作
   授权保护（见 [staff.md](../../internal/modules/staff/docs/staff.md)），前端页面只是构建产物；
 - **文档按环境开关**（`HTTP_API_DOCS_ENABLED`，默认 `false`）：
@@ -66,6 +66,8 @@
   localhost 或内网，由网关对外；它和前台共用数据库连接池，连接数上限按两者合计规划。后台必须用独立域名
   （如 `admin.example.com`，前台是 `api.example.com`），后台前端页面和 `/admin/v1` 都在这个域名下、同源：
   cookie 不按端口和路径隔离，和前台同一个主机名时，后台会话 cookie 也会被发到前台 server。
+  后台端口的 `/metrics` 只有后台的 HTTP 指标，进程的运行时和业务指标在前台端口：后台独立部署时前台端口也要抓取，
+  见 [observability.md](observability.md) 的"两种 Registry 的归属不同"。
   首个超级管理员
   用 `docker compose run --rm api staff create -username root` 创建（见 `internal/modules/staff/docs/staff.md`），
   会话和日志参数是 `STAFF_*` 环境变量。前台用户的登录会话和微信凭据是 `AUTH_*` /
@@ -85,8 +87,15 @@
   （`podman compose -f deploy/docker-compose.yml up -d --build --force-recreate --no-deps api`），否则跑的
   还是旧镜像；在终端里执行 `compose run` 会分配 TTY，输出的行尾带 `\r`，脚本解析输出（如
   `staff create` 打印的临时密码）前先 `tr -d '\r'`；
-- api 只监听 HTTP，TLS 由上游反代/LB 终止；`HTTP_HSTS_MAX_AGE` 只在确实有上游终止 TLS
-  时打开；
+- api 只监听 HTTP，TLS 由上游反代/LB 终止；HSTS 由终止 TLS 的那一层加：网关加（推荐，网关自己返回的 404 也带）时
+  `HTTP_HSTS_MAX_AGE` 保持 0，不重复发；网关不加时才在应用里打开；
+- 排空：`HTTP_SHUTDOWN_DRAIN`（默认 0）是收到停止信号后继续服务的时间，期间每个响应带 `Connection: close`、`/readyz`
+  返回 503，空闲连接留给网关按自己的 `keepalive_timeout` 关掉，之后才优雅关闭（`httpserver.Component`）。网关后的多实例
+  部署必须设，且 ≥ 网关 upstream 的 `keepalive_timeout` + 1s：否则服务端关闭空闲连接的瞬间，网关可能复用它发出请求，非幂等
+  请求不会被重试，直接失败；还要留出网关主动检查摘掉实例的时间（见下面的"为什么零失败"）。api 的关停上限是排空期 + 20s，再加 tracing 关停的 3s，进程管理器的停止超时要大于总和；
+  同组组件出错（如后台端口监听失败）导致的停止不排空，立即关闭（`lifecycle.Failed`）；worker 没有网关转来的流量，不排空；
+- tracing：`OTEL_EXPORTER_OTLP_ENDPOINT` 为空时不导出、不建立连接（trace_id 照样有），设置后全量导出，由 Collector
+  做尾部采样（见 [observability.md](observability.md) 的"tracing"）；
 - Postgres 备份/PITR 是基础设施职责，不在应用代码里，但部署时必须确认已经覆盖。
 
 ### 前台登录的部署约束
@@ -103,6 +112,64 @@
 - **网关的职责**：网关只做 TLS 终止、同源反代、`X-Forwarded-For`（配合 `HTTP_TRUSTED_PROXY=true`）、
   粗粒度限流，转发前删掉客户端带来的 `X-User-ID`。不在网关里做登录和 JWT 校验：那样吊销要等 token
   过期才生效，依赖会话的操作（† 操作、绑定、重新验证）也不可用，只会返回 `session_unavailable`（见 [auth.md](auth.md) 的"前台鉴权"）。
+
+### 裸机双实例发布
+
+单台应用机（裸机/VM），systemd 管理进程，OpenResty 同机反代，两个 api 实例和一个 worker。发布、手工
+`systemctl restart`、单实例崩溃时，经网关的请求零失败（崩溃那一刻在途的非幂等请求除外）。文件都在 `deploy/baremetal/`：
+
+| 文件 | 作用 |
+|---|---|
+| `systemd/app-api@.service` | api 实例（`%i` 为 `a`、`b`），`HTTP_SHUTDOWN_DRAIN=6s`，`INSTANCE_ID=%H-api-%i` |
+| `systemd/app-worker.service` | worker，单实例 |
+| `systemd/app-migrate@.service` | 迁移（`%i` 为版本号），一次性服务，环境与 api 相同 |
+| `openresty/app.conf`、`openresty/snippets/app_proxy.conf` | 网关：两个域名、upstream、只转发业务路径、HSTS、`X-Trace-Id` |
+| `alloy/config.alloy` | 本机抓 5 个端口的指标、读 journald 日志、接收 trace 做尾部采样 |
+| `rollout.sh` | 滚动发布与回滚 |
+
+布局：`/opt/app/releases/<版本>/{api,worker}`，`/opt/app/current` 指向当前版本；`/etc/app/app.env` 放公共配置
+（`DB_DSN`、`REDIS_ADDR`、密钥，以及 `USER_PUBLIC_BASE_URL=https://api.example.com`、`CORS_ALLOW_ORIGINS` 和
+`USER_COOKIE_DELIVERY_ORIGINS` 列 web 前端、`HTTP_ADMIN_ORIGIN=https://admin.example.com`、
+`OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318`），`/etc/app/api-a.env`、`api-b.env` 放各自的端口
+（a：8080/8081，b：8082/8083）。端口在 unit、OpenResty upstream、Alloy 抓取目标、`rollout.sh` 四处要一致。
+
+**域名**：`api.example.com` 只转发 `/v1/`；后台用独立域名 `admin.example.com`（后台前端页面和 `/admin/v1` 同源，
+会话 cookie 只属于这个主机名）。网关不转发 `/healthz`、`/readyz`、`/metrics` 和生产的文档（见上面"网关只转发业务路径"）；
+发布脚本和 Alloy 在本机直接访问端口。
+
+**为什么零失败**：OpenResty upstream 写死两个实例，发布时不 reload。网关每秒直接探测每个实例端口（前台、后台）的
+`/readyz`（`lua-resty-upstream-healthcheck`，一次失败就摘、连续 2 次成功才恢复）。实例排空期 `/readyz` 返回 503，
+约 2～3 秒内各 worker 都把它摘掉，不再发新请求；摘掉之前的响应带 `Connection: close`，空闲连接也由网关在
+`keepalive_timeout 4s` 后自己关。所以排空结束关闭 listener 时已经没有新连接进来：只靠被动检查（`max_fails`）的话，
+关闭那一刻已在内核 accept 队列里握手完成的连接会收到 RST，网关已把请求写出，非幂等请求不重试，直接 502。
+`HTTP_SHUTDOWN_DRAIN` 因此要同时覆盖 `keepalive_timeout` + 1s 和探测摘除的时间，`6s` 两者都满足。被动检查保留作兜底：
+实例崩溃时连接被拒，请求还没发出，`proxy_next_upstream error` 把它（包括 POST）转给另一个实例；网关只把连接错误算作
+失败（不写 `timeout`、`http_502`），慢请求不会让实例被摘。
+
+**发布**：`deploy/baremetal/rollout.sh v1.2.3`，顺序是迁移 → 原子切换 `current` → worker（等 `:9090/healthz`）→
+api@a → api@b。每个 api 实例重启前确认另一个 `/readyz` 通过，重启后等自己 `/readyz` 通过，再等 `fail_timeout + 1` 秒让
+网关解除失败标记、主动检查恢复这个实例（否则两个实例可能同时被视为不可用，返回 `no live upstreams`）。worker 必须先于 api，见
+[queue.md](queue.md) 的"发布顺序"。一次约 40 秒。
+
+**回滚**：`rollout.sh --rollback v1.2.2`，跳过迁移，其余相同。不能不带参数重跑旧版本：旧二进制执行 `migrate up` 时
+数据库已在新版本，旧二进制里没有这个迁移文件，golang-migrate 直接报错。前提是迁移遵守 expand/contract（新版本只加
+表、加可空列，删列放到后一个版本），旧代码能跑在新表结构上。
+
+**子命令**（`staff create`、`queue cancel-orphans`）用 `systemd-run` 按服务的用户和环境执行：
+`sudo systemd-run --uid=app --gid=app -p EnvironmentFile=/etc/app/app.env --wait --pipe --quiet /opt/app/current/api staff create -username root`。
+
+**故障**：
+
+| 情况 | 结果 | 处理 |
+|---|---|---|
+| 迁移失败 | 实例都没动 | 修迁移后重跑 |
+| 新 worker 起不来 | api 都没动，任务在库里排队 | 查 `journalctl -u app-worker`；修复后重跑或 `--rollback` |
+| 新 api 起不来 | 该实例被停止，另一个继续服务 | 查日志；`--rollback` |
+| api 实例崩溃 | 在途的幂等请求被网关重试，POST/PATCH 失败；之后全部转到另一个；systemd 2s 后拉起 | 无需处理 |
+| worker 被 `kill -9` | 崩溃时 `running` 的任务 1 小时后由 river 的 rescuer 救回重试 | 等 rescuer，不手工改任务状态 |
+
+前置：`HTTP_TRUSTED_PROXY=true`；配置 Redis（否则限流额度是配置值 × 2）；数据库连接数按两个 api 实例常驻加 worker
+计算；Alloy 的运行用户加入 `systemd-journal` 组；抓取失败告警的 `for` 大于一次发布的时长（如 `2m`）。
 
 ## 版本固定
 

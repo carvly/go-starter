@@ -1,5 +1,5 @@
-// Package logger 构造结构化日志（log/slog JSON）。关联字段（request_id、user_id、任务 kind 等）
-// 存在 ctx 里（internal/kit/logctx），由这里的根 Handler 在输出时统一写入。
+// Package logger 构造结构化日志（log/slog JSON）。关联字段（user_id、任务 kind 等）存在 ctx 里
+// （internal/kit/logctx），trace_id、span_id 取自 ctx 里的 span，都由这里的根 Handler 在输出时统一写入。
 package logger
 
 import (
@@ -8,7 +8,15 @@ import (
 	"log/slog"
 	"os"
 
+	"go.opentelemetry.io/otel/trace"
+
 	"app.local/internal/kit/logctx"
+)
+
+// trace_id、span_id 是 OpenTelemetry 日志关联的标准字段名，值取自 ctx 里的 span，不经 logctx 中转。
+const (
+	keyTraceID = "trace_id"
+	keySpanID  = "span_id"
 )
 
 // New 构造进程的根 logger：JSON 输出，attrs 是每条记录都带的静态字段（见 process.Identity.LogAttrs），
@@ -74,6 +82,10 @@ func (h *contextHandler) Enabled(ctx context.Context, level slog.Level) bool {
 
 func (h *contextHandler) Handle(ctx context.Context, r slog.Record) error {
 	attrs := logctx.Attrs(ctx)
+	if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
+		attrs = append(attrs[:len(attrs):len(attrs)],
+			slog.String(keyTraceID, sc.TraceID().String()), slog.String(keySpanID, sc.SpanID().String()))
+	}
 	if len(attrs) == 0 {
 		return h.inner.Handle(ctx, r)
 	}

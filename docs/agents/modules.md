@@ -219,7 +219,7 @@ Repository 不是任何公开字段。
 
 | 现状 | 拆分前要改成 | 位置 |
 |---|---|---|
-| 同步调用由组合根用对方的 Service 适配 | 远程客户端（oapi-codegen 按 tag 生成 client）：超时、只重试幂等请求、透传 request_id、把远端错误翻译成消费方的错误；跑消费方已有的窄接口契约用例（见上面"跨模块协作"） | `internal/app/adapters_*.go` |
+| 同步调用由组合根用对方的 Service 适配 | 远程客户端（oapi-codegen 按 tag 生成 client）：超时、只重试幂等请求、传播 trace（traceparent）、把远端错误翻译成消费方的错误；跑消费方已有的窄接口契约用例（见上面"跨模块协作"） | `internal/app/adapters_*.go` |
 | river 只在同一个库里投递 | river 继续做本服务的 outbox，新增 relay worker 转发到外部 MQ | [queue.md](queue.md) 的“外部消息队列” |
 | JWT 用 HS256 共享密钥 | 只校验不签发的服务出现时换 RS256/ES256 + JWKS，或后端统一用网关信任 header 模式 | `internal/platform/crypto/jwt.go`、[auth.md](auth.md) |
 | 一个组合根装配全部模块 | 每个服务一个显式的组合根（`modules.go`），不在运行时自动判断对方在本进程还是远程 | `internal/app/modules.go` |

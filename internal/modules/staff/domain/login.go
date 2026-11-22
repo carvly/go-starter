@@ -13,13 +13,13 @@ import (
 	"app.local/internal/kit/logctx"
 )
 
-// LoginInput 的 IP、UserAgent、RequestID 来自请求，用于会话记录、退避计数和操作日志。
+// LoginInput 的 IP、UserAgent、TraceID 来自请求，用于会话记录、退避计数和操作日志。
 type LoginInput struct {
 	Username  string
 	Password  string
 	IP        string
 	UserAgent string
-	RequestID string
+	TraceID   string
 }
 
 // Login 校验用户名和密码，成功后建会话并返回会话 token（只在这里出现一次，库里存摘要）。
@@ -61,7 +61,7 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (string, *Account, e
 			staffID, since = a.ID, a.PasswordChangedAt
 		}
 		audit := func(action, result string) error {
-			return s.RecordAudit(ctx, &AuditEntry{StaffID: staffID, LoginKey: key, Action: action, Result: result, IP: in.IP, RequestID: in.RequestID})
+			return s.RecordAudit(ctx, &AuditEntry{StaffID: staffID, LoginKey: key, Action: action, Result: result, IP: in.IP, TraceID: in.TraceID})
 		}
 		failures, last, err := s.audit.LoginFailures(ctx, key, in.IP, since)
 		if err != nil {

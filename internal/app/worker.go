@@ -30,14 +30,15 @@ func RunWorker(ctx context.Context, cfg *config.Config) error {
 	mods := buildModules(in, configs)
 	workers := newWorkers(mods)
 	queue.WarnOrphans(ctx, in.Pool, workers.Kinds(), logger)
-	workClient, err := queue.NewClient(in.Pool, workers, periodicJobs(mods), logger)
+	workClient, err := queue.NewClient(in.Pool, workers, periodicJobs(mods), logger, in.Tracer)
 	if err != nil {
 		return fmt.Errorf("app: build queue worker client: %w", err)
 	}
 
 	return lifecycle.Run(ctx, shutdownTimeout,
 		queue.Component(workClient),
-		httpserver.Component("worker internal", httpserver.NewInternal(logger, in.Metrics), cfg.HTTP.InternalAddr),
+		// 内部端口没有网关转来的流量，不排空。
+		httpserver.Component("worker internal", httpserver.NewInternal(logger, in.Metrics), cfg.HTTP.InternalAddr, 0),
 	)
 }
 

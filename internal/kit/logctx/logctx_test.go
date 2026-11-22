@@ -46,18 +46,17 @@ func TestWith_DerivedContextsDoNotShareState(t *testing.T) {
 	}
 }
 
-func TestWithRequestID_IsBothAttrAndRawValue(t *testing.T) {
-	ctx := logctx.WithRequestID(t.Context(), "rid-1")
-	if logctx.RequestID(ctx) != "rid-1" || attrMap(ctx)["request_id"] != "rid-1" {
-		t.Errorf("RequestID = %q, Attrs = %v", logctx.RequestID(ctx), logctx.Attrs(ctx))
+func TestWithLogger_Binds(t *testing.T) {
+	base := slog.New(slog.DiscardHandler)
+	if logctx.From(logctx.WithLogger(t.Context(), base)) != base {
+		t.Error("WithLogger 应绑定 logger")
 	}
 }
 
-func TestWithRequest_BindsLogger(t *testing.T) {
-	base := slog.New(slog.DiscardHandler)
-	ctx := logctx.WithRequest(t.Context(), base, "rid-1")
-	if logctx.From(ctx) != base || logctx.RequestID(ctx) != "rid-1" {
-		t.Error("WithRequest 应同时绑定 logger 和 request_id")
+func TestWithLinkTraceID_IsCorrelationField(t *testing.T) {
+	ctx := logctx.WithLinkTraceID(t.Context(), "4bf92f3577b34da6a3ce929d0e0e4736")
+	if attrMap(ctx)["link_trace_id"] != "4bf92f3577b34da6a3ce929d0e0e4736" {
+		t.Errorf("Attrs = %v", logctx.Attrs(ctx))
 	}
 }
 

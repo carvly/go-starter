@@ -9,7 +9,11 @@ import (
 	"strings"
 	"testing"
 
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+
 	"app.local/internal/platform/oauth"
+	"app.local/internal/platform/tracing"
 )
 
 const testAppID = "wx-test-appid"
@@ -221,5 +225,72 @@ func TestWeChat_NetworkErrorHidesSecret(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "TOP-SECRET-VALUE") {
 		t.Fatalf("错误文字泄露了 secret：%v", err)
+	}
+}
+
+// 调用微信记 client span，但 span 里不能有查询参数：appid、secret、用户的 access_token 都在查询参数里。
+// 也不向微信传播 traceparent。span 建在 ctx 里请求 span 的 provider 上，是它的子 span，不经 otel 全局 provider。
+func TestWeChat_SpanHasNoQueryOrPropagation(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	ctx, parent := tracing.NewWithProcessor(rec).Tracer("test").Start(t.Context(), "request")
+	defer parent.End()
+
+	var sawTraceparent bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawTraceparent = sawTraceparent || r.Header.Get("traceparent") != ""
+		_, _ = w.Write([]byte(`{"openid":"om","session_key":"sk","unionid":"U"}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	const secret = "app-secret-must-not-leak"
+	n := oauth.WeChatMiniprogram(oauth.WeChatApp{AppID: "mini-appid", Secret: secret}, srv.URL)
+	if _, err := n.VerifyNative(ctx, oauth.NativeCredential{Code: "c"}); err != nil {
+		t.Fatal(err)
+	}
+	spans := rec.Ended()
+	if len(spans) != 1 || spans[0].Name() != "wechat GET /sns/jscode2session" {
+		t.Fatalf("spans = %v", spans)
+	}
+	if spans[0].Parent().SpanID() != parent.SpanContext().SpanID() {
+		t.Error("微信调用的 span 应是请求 span 的子 span")
+	}
+	for _, a := range spans[0].Attributes() {
+		if v := a.Value.String(); strings.Contains(v, secret) || strings.Contains(v, "mini-appid") || strings.Contains(v, "?") {
+			t.Errorf("span 属性 %s = %q 泄露了查询参数", a.Key, v)
+		}
+	}
+	if sawTraceparent {
+		t.Error("不应向微信传播 traceparent")
+	}
+}
+
+// 微信的业务错误 HTTP 状态恒为 200，errcode≠0 和非 2xx 都要让 span 标错，尾部采样才会保留失败的登录。
+func TestWeChat_FailedCallMarksSpanError(t *testing.T) {
+	cases := map[string]http.HandlerFunc{
+		"errcode": func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"errcode":40029,"errmsg":"invalid code"}`))
+		},
+		"非 2xx": func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte(`{}`))
+		},
+	}
+	for name, h := range cases {
+		t.Run(name, func(t *testing.T) {
+			rec := tracetest.NewSpanRecorder()
+			ctx, parent := tracing.NewWithProcessor(rec).Tracer("test").Start(t.Context(), "request")
+			defer parent.End()
+			srv := httptest.NewServer(h)
+			t.Cleanup(srv.Close)
+
+			n := oauth.WeChatMiniprogram(oauth.WeChatApp{AppID: "a", Secret: "s"}, srv.URL)
+			if _, err := n.VerifyNative(ctx, oauth.NativeCredential{Code: "c"}); err == nil {
+				t.Fatal("want error")
+			}
+			spans := rec.Ended()
+			if len(spans) != 1 || spans[0].Status().Code != codes.Error {
+				t.Fatalf("span status = %+v, want Error", spans)
+			}
+		})
 	}
 }

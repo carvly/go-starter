@@ -1,5 +1,6 @@
-// Package logctx 在 context 里携带 *slog.Logger 和日志关联字段（request_id、user_id、
-// 任务 job_kind 等）。这是唯一允许的 context.Value 用法：横切的可观测性信息，不是业务依赖。
+// Package logctx 在 context 里携带 *slog.Logger 和日志关联字段（user_id、任务 job_kind 等）。
+// 这是唯一允许的 context.Value 用法：横切的可观测性信息，不是业务依赖。trace_id、span_id 不在这里：
+// 它们取自 ctx 里的 span，由 internal/platform/logger 的根 Handler 写入。
 //
 // 关联字段只存值，由 internal/platform/logger 的根 Handler 在输出每条记录时从 ctx 取出写入，
 // 所以无论用哪个 logger（logctx.From、slog.Default、第三方库拿到的 logger），只要调用带
@@ -14,20 +15,19 @@ import (
 // 关联字段的键名，全项目只用这一套。不导出：其它包只能经下面的 With* 写入，引用不到键名，
 // 手写同名字段只能用字面量，由 sloglint 的 forbidden-keys 拦下。
 const (
-	keyRequestID = "request_id"
-	keyUserID    = "user_id"
-	keyStaffID   = "staff_id"
-	keyMethod    = "method"
-	keyRoute     = "route"
+	keyUserID  = "user_id"
+	keyStaffID = "staff_id"
+	keyMethod  = "method"
+	keyRoute   = "route"
 	// 与 river 自己日志里的键一致，按任务类型检索时两边都能查到。
 	keyJobKind = "job_kind"
 	keyJobID   = "job_id"
 	keyAttempt = "attempt"
+	// 任务的 trace_id 是本次执行的；入队那次请求的 trace_id 经 span link 关联，记在这里。
+	keyLinkTraceID = "link_trace_id"
 )
 
 type loggerKey struct{}
-
-type requestIDKey struct{}
 
 type attrsKey struct{}
 
@@ -90,26 +90,6 @@ func WithStaffID(ctx context.Context, id string) context.Context {
 	return With(ctx, slog.String(keyStaffID, id))
 }
 
-// WithRequestID 记录 request_id：既作为关联字段输出，也单独保存原始值，供跨进程传播
-// （入队时写进任务 metadata）读取。
-func WithRequestID(ctx context.Context, id string) context.Context {
-	ctx = context.WithValue(ctx, requestIDKey{}, id)
-	return With(ctx, slog.String(keyRequestID, id))
-}
-
-// RequestID 没有绑定时返回空字符串：不是所有调用都来自一次 HTTP 请求。
-func RequestID(ctx context.Context) string {
-	if id, ok := ctx.Value(requestIDKey{}).(string); ok {
-		return id
-	}
-	return ""
-}
-
-// WithRequest 同时绑定 request_id 和这次请求使用的 logger。
-func WithRequest(ctx context.Context, base *slog.Logger, requestID string) context.Context {
-	return WithLogger(WithRequestID(ctx, requestID), base)
-}
-
 // WithRoute 记录请求的方法和路由模板。route 为空（没匹配上路由）时不写：原始路径不进日志字段。
 func WithRoute(ctx context.Context, method, route string) context.Context {
 	ctx = With(ctx, slog.String(keyMethod, method))
@@ -127,4 +107,10 @@ func WithJobKind(ctx context.Context, kind string) context.Context {
 // WithJob 记录正在执行的任务：类型、ID、第几次执行。
 func WithJob(ctx context.Context, kind string, id int64, attempt int) context.Context {
 	return With(WithJobKind(ctx, kind), slog.Int64(keyJobID, id), slog.Int(keyAttempt, attempt))
+}
+
+// WithLinkTraceID 记录任务入队那次请求的 trace_id（span link 指向的 trace）。trace 会被采样丢掉，日志不会：
+// 只有这个字段能把任务和发起它的请求连起来。
+func WithLinkTraceID(ctx context.Context, id string) context.Context {
+	return With(ctx, slog.String(keyLinkTraceID, id))
 }

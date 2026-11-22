@@ -18,6 +18,7 @@ import (
 	staff "app.local/internal/modules/staff/domain"
 	"app.local/internal/modules/staff/domain/domaintest"
 	"app.local/internal/platform/httpserver"
+	"app.local/internal/platform/tracing"
 )
 
 type fakePasswords struct{}
@@ -46,6 +47,7 @@ func newServer(t *testing.T) *testServer {
 		staff.Config{SessionIdleTimeout: 30 * time.Minute, SessionMaxAge: 12 * time.Hour, TempPasswordTTL: 24 * time.Hour}, ops)
 	h := adminapi.NewHandler(svc, 12*time.Hour)
 	e, err := httpserver.NewAdmin(httpserver.AdminDeps{
+		Tracer: tracing.Disabled(),
 		Logger: slog.New(slog.DiscardHandler),
 		HTTP:   config.HTTPConfig{BodyLimitBytes: 1 << 20, RequestTimeout: 5 * time.Second, GlobalRateLimitPerSecond: 1000},
 		Origin: "https://admin.example.com",
@@ -338,24 +340,25 @@ func TestListAccounts_IncludesRoleIDs(t *testing.T) {
 	}
 }
 
-// 操作日志的 request_id 与请求日志的 request_id 是同一个值（网关传入即沿用）。
-func TestAudit_RecordsRequestID(t *testing.T) {
+// 操作日志的 trace_id 就是这次请求的 trace_id（响应头 X-Trace-Id），与网关访问日志、应用日志同一个值。
+func TestAudit_RecordsTraceID(t *testing.T) {
 	s := newServer(t)
 	_, cookie := s.createActive(t, "root", true)
 	before := len(s.repo.Audit())
 
 	req := httptest.NewRequest(http.MethodPost, "/admin/v1/auth/login", strings.NewReader(`{"username":"root","password":"wrong"}`))
 	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
-	req.Header.Set(echo.HeaderXRequestID, "rid-login")
-	s.e.ServeHTTP(httptest.NewRecorder(), req)
+	loginRec := httptest.NewRecorder()
+	s.e.ServeHTTP(loginRec, req)
 
 	req = httptest.NewRequest(http.MethodPost, "/admin/v1/auth/logout", nil)
 	req.AddCookie(&http.Cookie{Name: adminapi.SessionCookie, Value: cookie})
-	req.Header.Set(echo.HeaderXRequestID, "rid-write")
-	s.e.ServeHTTP(httptest.NewRecorder(), req)
+	writeRec := httptest.NewRecorder()
+	s.e.ServeHTTP(writeRec, req)
 
+	loginID, writeID := loginRec.Header().Get(httpserver.HeaderTraceID), writeRec.Header().Get(httpserver.HeaderTraceID)
 	got := s.repo.Audit()[before:]
-	if len(got) != 2 || got[0].RequestID != "rid-login" || got[1].RequestID != "rid-write" {
-		t.Errorf("操作日志 = %+v, want request_id 依次为 rid-login、rid-write", got)
+	if loginID == "" || writeID == "" || len(got) != 2 || got[0].TraceID != loginID || got[1].TraceID != writeID {
+		t.Errorf("操作日志 = %+v, want trace_id 依次为 %q、%q", got, loginID, writeID)
 	}
 }

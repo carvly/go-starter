@@ -1,0 +1,22 @@
+# worker：单实例，消费队列、跑定时任务。内部端口只有 /healthz、/metrics，不经网关。
+[Unit]
+Description=app worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=app
+Group=app
+EnvironmentFile=/etc/app/app.env
+Environment=APP_ENV=production HTTP_INTERNAL_ADDR=127.0.0.1:9090 INSTANCE_ID=%H-worker
+ExecStart=/opt/app/current/worker
+KillSignal=SIGTERM
+# 关停上限：20s + 队列强制停止最多 5s + tracing 关停 3s = 28s，留余量。
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=2
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
