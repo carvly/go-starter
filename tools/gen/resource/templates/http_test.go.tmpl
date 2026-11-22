@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +18,7 @@ import (
 	"{{.GoMod}}/internal/modules/{{.N.Module}}/domain"
 	"{{.GoMod}}/internal/modules/{{.N.Module}}/domain/domaintest"
 	"{{.GoMod}}/internal/platform/httpserver"
+	"{{.GoMod}}/internal/platform/tracing"
 )
 
 // newServer 用真实的{{if .Admin}}后台 {{end}}server（中间件链、校验器、错误处理）挂上本模块的操作。
@@ -30,7 +30,8 @@ func newServer(t *testing.T) (*echo.Echo, *domain.Service, *domaintest.Repositor
 	pass := func(next echo.HandlerFunc) echo.HandlerFunc { return next }
 {{- if .Admin}}
 	e, err := httpserver.NewAdmin(httpserver.AdminDeps{
-		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Tracer: tracing.Disabled(),
+		Logger: slog.New(slog.DiscardHandler),
 		HTTP:   config.HTTPConfig{BodyLimitBytes: 1 << 20, RequestTimeout: 5 * time.Second, GlobalRateLimitPerSecond: 1000},
 		Origin: "https://admin.example.com",
 		Routes: []func(*echo.Group){func(g *echo.Group) { adminapi.Register(g, adminapi.NewHandler(svc)) }},
@@ -38,7 +39,8 @@ func newServer(t *testing.T) (*echo.Echo, *domain.Service, *domaintest.Repositor
 	})
 {{- else}}
 	e, err := httpserver.New(httpserver.Deps{
-		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Tracer: tracing.Disabled(),
+		Logger: slog.New(slog.DiscardHandler),
 		HTTP:   config.HTTPConfig{BodyLimitBytes: 1 << 20, RequestTimeout: 5 * time.Second, GlobalRateLimitPerSecond: 1000},
 		CORS:   config.CORSConfig{AllowOrigins: []string{"https://example.com"}},
 		Routes: []func(*echo.Group){func(g *echo.Group) {
