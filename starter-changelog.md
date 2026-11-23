@@ -3,6 +3,58 @@
 starter 自身的发版说明，升级工具从目标版本读取这份文件的"升级说明"（格式见 `docs/agents/upgrade.md`）。
 根目录的 `CHANGELOG.md` 留给业务项目记录自己的变更，starter 不提供、不覆盖。
 
+## v0.3.0 — 2026-11-23
+
+可观测性（tracing、统一的进程身份与 HTTP 指标、日志关联字段），以及裸机部署改为 systemd socket activation 的
+零排队发布。没有线上数据，所有改动直接到目标形态，不提供兼容层。
+
+### 破坏性变更
+
+- `trace_id` 取代 `request_id`：日志字段、响应头 `X-Trace-Id`、后台操作日志都用同一个值；任务执行是新的 trace，经
+  span link 和日志字段 `link_trace_id` 关联入队方。`events.UserDeleted` 删除 `RequestID` 字段。
+- 进程身份统一为 `process.Identity`，日志字段和指标标签是 `service_name`、`service_version`、`service_instance_id`；
+  删除 `logger.Process`，`logctx` 的字段键不再导出，改用 `WithRoute`、`WithJob` 等函数写入。
+- 去掉 echo-prometheus：HTTP 指标改为 `http_server_request_duration_seconds{server, method, route, status}`，
+  每个端口一个 Registry、都带 `service_info`。
+- sloglint 启用 `context: all`、static-msg、key-naming-case、attr-only、no-global、forbidden-keys：日志一律调用
+  `*Context` 方法、字段写成 `slog.Attr`，不用 slog 的全局函数，不手写关联字段。
+- `TracerProvider` 必填（`httpserver.Deps.Tracer`、`queue.NewClient`）。
+- `HTTP_API_DOCS_ENABLED` 默认改为 `false`。
+- `httpserver.Component(name, e, ln, stop)` 改为接收已绑定的 `net.Listener` 和 `httpserver.Stop`（用
+  `httpserver.Listen` 绑定）；`httpserver.NewInternal` 接收 Registry。
+- river 的表改由 river 自己的迁移器 `rivermigrate` 执行（迁移来源 `river`，版本记在 `river_migration`），删除导出的
+  SQL 文件和 `schema_migrations_platform`；Postgres 16 起都能迁移。`migrate.Source` 新增 `Migrator`，
+  `api migrate force` 对 river 不适用。
+- `deploy/baremetal/` 换成 socket activation 的写法：`<项目>-api.socket` 由实例 `<项目>-api@1`、`@2` 共享，发布时
+  轮流接管，排队的连接不会被拒绝；模板由 `render.sh` 按项目渲染，一台机器可以部署多个项目。
+
+### 新增
+
+- OpenTelemetry tracing：HTTP、SQL（otelpgx）、Redis（redisotel）、队列（otelriver）、微信调用建 span，
+  `OTEL_EXPORTER_OTLP_ENDPOINT` 为空时不导出。
+- `HTTP_SHUTDOWN_DRAIN` 排空期：响应带 `Connection: close`，`/readyz` 返回 503。
+- `HTTP_SOCKET_ACTIVATION`：从 systemd 继承监听 socket，依赖检查通过后发 `READY=1`；共享 socket 时收到停止信号立即
+  不再 accept。`INSTANCE_ID` 配置实例标识。
+- 错误日志按状态码分级，panic 堆栈放进独立的 `stack` 字段；输出接到 journald 时每行带 syslog 优先级前缀
+  （systemd 219 没有 `JOURNAL_STREAM` 时按 stdout 的对端识别）。
+- `deploy/baremetal/app-cmd`：以服务的用户和环境执行 `api` 子命令。
+
+### 升级说明
+
+#### 合并前
+
+- 日志检索、告警和看板：`request_id` 改为 `trace_id`，`service`/`version`/`instance` 改为 `service_name`/
+  `service_version`/`service_instance_id`，HTTP 指标改为 `http_server_request_duration_seconds`。
+- 裸机部署按 `docs/agents/deploy-ci.md` 的"裸机发布"用 `deploy/baremetal/render.sh` 重新生成单元、网关和 Alloy
+  配置，替换旧的 `app-*` 单元。
+
+#### 合并后迁移前
+
+- 业务模块的代码改到能通过 lint 和测试：日志调用改用 `*Context` 方法和 `slog.Attr`；生成过的 `httpapi`、
+  `adminapi` 测试给 `httpserver.Deps` 传 `Tracer`（参考 starter 模块的同名测试）。改完跑 `go build ./...`、
+  `go test ./...`、`make lint` 再续跑。
+- river 的迁移来源换了版本表，已执行过旧 `schema_migrations_platform` 的本地库删卷重建（`docker compose down -v`）。
+
 ## v0.2.0 — 2026-11-20
 
 架构整理：模块名与职责一致、同一事实只声明一处、第三方登录的通用链路接通。没有线上数据，所有改动直接到目标形态，
