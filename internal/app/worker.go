@@ -35,10 +35,14 @@ func RunWorker(ctx context.Context, cfg *config.Config) error {
 		return fmt.Errorf("app: build queue worker client: %w", err)
 	}
 
+	ln, err := httpserver.Listen(cfg.HTTP.InternalAddr)
+	if err != nil {
+		return fmt.Errorf("app: worker internal port: %w", err)
+	}
 	return lifecycle.Run(ctx, shutdownTimeout,
 		queue.Component(workClient),
 		// 内部端口没有网关转来的流量，不排空。
-		httpserver.Component("worker internal", httpserver.NewInternal(logger, in.Metrics), cfg.HTTP.InternalAddr, 0),
+		httpserver.Component("worker internal", httpserver.NewInternal(logger, in.Metrics), ln, httpserver.Stop{}),
 	)
 }
 

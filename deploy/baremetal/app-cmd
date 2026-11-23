@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# 以 {{name}} 服务的用户和环境执行 api 子命令，由 deploy/baremetal/render.sh 生成，见 docs/agents/deploy-ci.md 的"裸机发布"：
+#   {{root}}/bin/app-cmd staff create -username root
+#   {{root}}/bin/app-cmd queue cancel-orphans
+# env 文件逐行 export，不经 shell 求值（值里的 &、$、; 原样保留）。systemd 的 EnvironmentFile= 还会处理反斜杠转义、
+# 续行、值开头的引号、首尾空白和 ; 开头的注释，这些写法两边读出来不一样，遇到就报错（见 docs/agents/deploy-ci.md 的 env 文件格式）。
+# 输出和退出码直接回到终端。systemd 219 的 systemd-run 没有 --wait、--pipe，不能用它。
+set -euo pipefail
+if [[ $EUID -ne 0 ]]; then
+    echo "app-cmd：需要 root" >&2
+    exit 1
+fi
+NAME='{{name}}'
+ENV_FILE=${APP_ENV_FILE:-'{{conf_dir}}/app.env'}
+BIN=${APP_BIN:-'{{root}}/current/api'}
+exec sudo -u "${APP_USER:-$NAME}" bash -c '
+n=0
+sq=$(printf "\047")
+while IFS= read -r line || [[ -n $line ]]; do
+    n=$((n + 1))
+    [[ -z $line || $line == \#* ]] && continue
+    key=${line%%=*} value=${line#*=}
+    if [[ $line != *=* || ! $key =~ ^[A-Za-z_][A-Za-z0-9_]*$ || $line == *\\* || $line == *[[:space:]] ||
+        $value == [[:space:]\"$sq]* ]]; then
+        echo "app-cmd：$0 第 $n 行的写法与 systemd 的读法不一致（反斜杠、引号、首尾空白、; 注释或不是 KEY=VALUE）" >&2
+        exit 1
+    fi
+    export -- "$line"
+done <"$0"
+exec "$1" "${@:2}"' "$ENV_FILE" "$BIN" "$@"

@@ -1,6 +1,6 @@
 # 配置、部署与 CI
 
-事实来源：`internal/config/`、`deploy/`、`configs/`、`.github/`、`Makefile`、`go.mod`、`scripts/check-versions.sh`、`scripts/outdated.sh`、`scripts/upgrade.sh`、`scripts/lib-deps.sh`
+事实来源：`internal/config/`、`internal/platform/systemd/`、`internal/app/listeners.go`、`deploy/`、`configs/`、`.github/`、`Makefile`、`go.mod`、`scripts/check-versions.sh`、`scripts/outdated.sh`、`scripts/upgrade.sh`、`scripts/lib-deps.sh`
 
 改 `internal/config/`、`deploy/`、`configs/`、`Makefile`、`.github/` 之前读这篇。
 改受保护的检查文件（`Makefile`、CI 工作流、`scripts/check-*.sh` 等，完整清单只在
@@ -90,10 +90,16 @@
 - api 只监听 HTTP，TLS 由上游反代/LB 终止；HSTS 由终止 TLS 的那一层加：网关加（推荐，网关自己返回的 404 也带）时
   `HTTP_HSTS_MAX_AGE` 保持 0，不重复发；网关不加时才在应用里打开；
 - 排空：`HTTP_SHUTDOWN_DRAIN`（默认 0）是收到停止信号后继续服务的时间，期间每个响应带 `Connection: close`、`/readyz`
-  返回 503，空闲连接留给网关按自己的 `keepalive_timeout` 关掉，之后才优雅关闭（`httpserver.Component`）。网关后的多实例
-  部署必须设，且 ≥ 网关 upstream 的 `keepalive_timeout` + 1s：否则服务端关闭空闲连接的瞬间，网关可能复用它发出请求，非幂等
-  请求不会被重试，直接失败；还要留出网关主动检查摘掉实例的时间（见下面的"为什么零失败"）。api 的关停上限是排空期 + 20s，再加 tracing 关停的 3s，进程管理器的停止超时要大于总和；
-  同组组件出错（如后台端口监听失败）导致的停止不排空，立即关闭（`lifecycle.Failed`）；worker 没有网关转来的流量，不排空；
+  返回 503，空闲连接留给网关按自己的 `keepalive_timeout` 关掉。网关后的部署必须设，且 ≥ 网关 upstream 的
+  `keepalive_timeout` + 1s：否则服务端关闭空闲连接的瞬间，网关可能复用它发出请求，非幂等请求不会被重试，直接失败；
+- 关停顺序（`httpserver.Component`，行为由 `httpserver.Stop` 决定）：收到停止信号起每个响应带 `Connection: close`；自己绑定
+  的端口排空期内照常 accept（一关闭新连接就被拒绝，要等网关按 `/readyz` 的 503 摘掉实例），排空结束才关闭 listener；
+  与其它进程共享的 socket（`Stop.SharedListener`，socket activation）立即关闭本进程这份 fd、不再 accept，新连接由接班的实例
+  接走，排空期只服务已建立的连接、连接都关闭后提前结束。之后等 `Serve` 返回（≤1s），再等没有"正在处理"的连接、"已 accept
+  还没发来第一个请求"的连接最多等 1s，最后 `http.Server.Shutdown` 关掉剩下的空闲连接，后两步合计 ≤15s。不能一开始就
+  `Shutdown`：它开始后读完请求的连接会被直接关闭而不响应（网关收到 EOF，502）。api 的关停上限是排空期 + 20s，再加 tracing
+  关停的 3s，进程管理器的停止超时要大于总和；同组组件出错（如后台端口监听失败）导致的停止不排空，立即关闭
+  （`lifecycle.Failed`）；worker 的内部端口没有网关转来的流量，不排空；
 - tracing：`OTEL_EXPORTER_OTLP_ENDPOINT` 为空时不导出、不建立连接（trace_id 照样有），设置后全量导出，由 Collector
   做尾部采样（见 [observability.md](observability.md) 的"tracing"）；
 - Postgres 备份/PITR 是基础设施职责，不在应用代码里，但部署时必须确认已经覆盖。
@@ -113,63 +119,125 @@
   粗粒度限流，转发前删掉客户端带来的 `X-User-ID`。不在网关里做登录和 JWT 校验：那样吊销要等 token
   过期才生效，依赖会话的操作（† 操作、绑定、重新验证）也不可用，只会返回 `session_unavailable`（见 [auth.md](auth.md) 的"前台鉴权"）。
 
-### 裸机双实例发布
+### 裸机发布
 
-单台应用机（裸机/VM），systemd 管理进程，OpenResty 同机反代，两个 api 实例和一个 worker。发布、手工
-`systemctl restart`、单实例崩溃时，经网关的请求零失败（崩溃那一刻在途的非幂等请求除外）。文件都在 `deploy/baremetal/`：
+单台应用机（裸机/VM），systemd 管理进程，OpenResty 同机反代。适用于 CentOS 7（内核 3.10、systemd 219）及以上
+（CentOS Stream 9/10 实测通过），所有单元和脚本只用 systemd 219 具备的功能。发布、`rollout.sh --restart`、api 进程崩溃时，
+经网关的请求不失败（崩溃那一刻在途的请求除外）。同一台机器可以部署多个项目。
 
-| 文件 | 作用 |
-|---|---|
-| `systemd/app-api@.service` | api 实例（`%i` 为 `a`、`b`），`HTTP_SHUTDOWN_DRAIN=6s`，`INSTANCE_ID=%H-api-%i` |
-| `systemd/app-worker.service` | worker，单实例 |
-| `systemd/app-migrate@.service` | 迁移（`%i` 为版本号），一次性服务，环境与 api 相同 |
-| `openresty/app.conf`、`openresty/snippets/app_proxy.conf` | 网关：两个域名、upstream、只转发业务路径、HSTS、`X-Trace-Id` |
-| `alloy/config.alloy` | 本机抓 5 个端口的指标、读 journald 日志、接收 trace 做尾部采样 |
-| `rollout.sh` | 滚动发布与回滚 |
+`deploy/baremetal/` 里的文件分两类。**每个项目一份**的是带占位符的模板，由 `deploy/baremetal/render.sh` 按项目名、端口、域名
+生成（不启用后台时省略 `--admin-port`、`--admin-domain`，后台相关的行全部去掉）：
 
-布局：`/opt/app/releases/<版本>/{api,worker}`，`/opt/app/current` 指向当前版本；`/etc/app/app.env` 放公共配置
-（`DB_DSN`、`REDIS_ADDR`、密钥，以及 `USER_PUBLIC_BASE_URL=https://api.example.com`、`CORS_ALLOW_ORIGINS` 和
-`USER_COOKIE_DELIVERY_ORIGINS` 列 web 前端、`HTTP_ADMIN_ORIGIN=https://admin.example.com`、
-`OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318`），`/etc/app/api-a.env`、`api-b.env` 放各自的端口
-（a：8080/8081，b：8082/8083）。端口在 unit、OpenResty upstream、Alloy 抓取目标、`rollout.sh` 四处要一致。
+```bash
+deploy/baremetal/render.sh --name myshop --api-port 8080 --admin-port 8081 --worker-port 9090 \
+    --api-domain api.myshop.com --admin-domain admin.myshop.com \
+    [--root /opt/myshop] [--conf-dir /etc/myshop]                    # 生成到 ./rendered-myshop，并打印安装命令
+```
 
-**域名**：`api.example.com` 只转发 `/v1/`；后台用独立域名 `admin.example.com`（后台前端页面和 `/admin/v1` 同源，
-会话 cookie 只属于这个主机名）。网关不转发 `/healthz`、`/readyz`、`/metrics` 和生产的文档（见上面"网关只转发业务路径"）；
-发布脚本和 Alloy 在本机直接访问端口。
+| 模板 | 生成 | 作用 |
+|---|---|---|
+| `systemd/api.socket` | `<项目>-api.socket` | systemd 绑定并持有前台、后台端口 |
+| `systemd/api@.service` | `<项目>-api@.service` | api 实例（`%i` 为 `1`、`2`），`Sockets=` 继承同一个 socket |
+| `systemd/worker.service` | `<项目>-worker.service` | worker，单实例 |
+| `systemd/migrate@.service` | `<项目>-migrate@.service` | 迁移（`%i` 为版本号），一次性服务，环境与 api 相同 |
+| `openresty/project.conf`、`openresty/admin.conf` | `<项目>.conf` | 网关：单地址 upstream、只转发业务路径；后台是独立域名 |
+| `alloy/project.alloy` | `<项目>.alloy` | 抓本项目 3 个端口的指标、按 `SYSLOG_IDENTIFIER` 读 journald，打 `project` 标签 |
+| `rollout.sh` | `/opt/<项目>/bin/rollout.sh` | 发布、回滚、零排队重启 |
+| `app-cmd` | `/opt/<项目>/bin/app-cmd` | 以服务的用户和环境执行子命令 |
+| `app.env.example` | `/etc/<项目>/app.env` | 配置骨架，地址与 socket 一致 |
 
-**为什么零失败**：OpenResty upstream 写死两个实例，发布时不 reload。网关每秒直接探测每个实例端口（前台、后台）的
-`/readyz`（`lua-resty-upstream-healthcheck`，一次失败就摘、连续 2 次成功才恢复）。实例排空期 `/readyz` 返回 503，
-约 2～3 秒内各 worker 都把它摘掉，不再发新请求；摘掉之前的响应带 `Connection: close`，空闲连接也由网关在
-`keepalive_timeout 4s` 后自己关。所以排空结束关闭 listener 时已经没有新连接进来：只靠被动检查（`max_fails`）的话，
-关闭那一刻已在内核 accept 队列里握手完成的连接会收到 RST，网关已把请求写出，非幂等请求不重试，直接 502。
-`HTTP_SHUTDOWN_DRAIN` 因此要同时覆盖 `keepalive_timeout` + 1s 和探测摘除的时间，`6s` 两者都满足。被动检查保留作兜底：
-实例崩溃时连接被拒，请求还没发出，`proxy_next_upstream error` 把它（包括 POST）转给另一个实例；网关只把连接错误算作
-失败（不写 `timeout`、`http_502`），慢请求不会让实例被摘。
+**全机一份**、不随项目渲染：`openresty/http.conf`（`$trace_id` 的 map、`trace_json` 日志格式）、`openresty/snippets/proxy.conf`
+（各项目 server 块共用的转发设置）、`alloy/host.alloy`（remote_write、Loki 写入、日志 JSON 解析、OTLP 接收与尾部采样；Alloy
+以目录方式加载，各项目的片段引用它的组件）、`sysctl/90-somaxconn.conf`。
 
-**发布**：`deploy/baremetal/rollout.sh v1.2.3`，顺序是迁移 → 原子切换 `current` → worker（等 `:9090/healthz`）→
-api@a → api@b。每个 api 实例重启前确认另一个 `/readyz` 通过，重启后等自己 `/readyz` 通过，再等 `fail_timeout + 1` 秒让
-网关解除失败标记、主动检查恢复这个实例（否则两个实例可能同时被视为不可用，返回 `no live upstreams`）。worker 必须先于 api，见
-[queue.md](queue.md) 的"发布顺序"。一次约 40 秒。
+部署目录由 `--root` 指定（默认 `/opt/<项目>`，下有 `releases/<版本>/`、`current`、`bin/`），配置目录由 `--conf-dir` 指定（默认
+`/etc/<项目>`，放 `app.env`），下文以默认值举例。项目名派生其余名字：运行用户、单元名、锁
+`/run/<项目>-rollout.lock`、日志标识 `<项目>-api-1`、`<项目>-api-2`、`<项目>-worker`、`<项目>-migrate`、网关 upstream 名、Alloy 组件名。
+端口和域名由参数给出，同机的项目各用一组。`service_name` 固定是 `api`/`worker`，多个项目共用观测后端时靠指标和日志的
+`project` 标签与 `INSTANCE_ID`（`<主机>-<项目>-api-<n>`）区分。
 
-**回滚**：`rollout.sh --rollback v1.2.2`，跳过迁移，其余相同。不能不带参数重跑旧版本：旧二进制执行 `migrate up` 时
-数据库已在新版本，旧二进制里没有这个迁移文件，golang-migrate 直接报错。前提是迁移遵守 expand/contract（新版本只加
-表、加可空列，删列放到后一个版本），旧代码能跑在新表结构上。
+`/etc/<项目>/app.env` 放全部配置（属主 `root:<项目>`、权限 640）：业务配置（`DB_DSN`、`REDIS_ADDR`、密钥、`CORS_ALLOW_ORIGINS`
+和 `USER_COOKIE_DELIVERY_ORIGINS` 列 web 前端、`OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318`），以及渲染时填好的
+`HTTP_ADDR`、`HTTP_ADMIN_ADDR`、`HTTP_ADMIN_ORIGIN`、`USER_PUBLIC_BASE_URL`。格式：每行 `KEY=VALUE`，`#` 开头为注释，
+值不加引号、不含反斜杠、行首行尾没有空白、不续行：这个范围内 systemd 的 `EnvironmentFile=` 和 `app-cmd` 读到的值相同
+（`&`、`$`、`;` 原样保留），超出范围的行 `app-cmd` 直接报错。**单元里用 `Environment=` 设定的键不能写进 app.env**
+（`APP_ENV`、`HTTP_TRUSTED_PROXY`、`HTTP_SOCKET_ACTIVATION`、`HTTP_SHUTDOWN_DRAIN`、`INSTANCE_ID`、`HTTP_INTERNAL_ADDR`）：
+`EnvironmentFile=` 的值会覆盖 `Environment=`，与书写顺序无关，照 `configs/.env.example` 抄进来会悄悄关掉 socket activation
+或排空；`rollout.sh` 发现这些键就拒绝执行。
 
-**子命令**（`staff create`、`queue cancel-orphans`）用 `systemd-run` 按服务的用户和环境执行：
-`sudo systemd-run --uid=app --gid=app -p EnvironmentFile=/etc/app/app.env --wait --pipe --quiet /opt/app/current/api staff create -username root`。
+**原理**：平时只有一个 api 实例在线。`<项目>-api@1`、`<项目>-api@2` 都写 `Sockets=<项目>-api.socket`，继承的是 systemd 持有的**同一个**
+监听 socket、同一个 accept 队列（`HTTP_SOCKET_ACTIVATION=true`，见 `internal/config` 的 `SocketActivation`）。发布时启动
+备用实例：它取得 socket（`systemd.Listeners`，按地址认领前台、后台）、初始化、用 `/readyz` 的同一组 `Pinger` 确认依赖可用
+（连接池是惰性建连的），之后才 `systemd.Notify(systemd.Ready)`，`Type=notify` 的 `systemctl start` 阻塞到这时。观察 5 秒：这时
+旧实例还没收到停止信号，两个实例一起 accept，新实例已承接真实流量，若它崩溃，旧实例照常服务。然后停掉旧实例：它立即关闭
+自己那份 fd、不再 accept（新连接全部由新实例接），已建立的 keep-alive 连接回完当前请求就关（`Connection: close`），连接
+关完即退出，最多排空 5 秒。socket 始终由 systemd 和存活的实例持有，旧实例下线时队列里的连接由新实例接走，不会被 RST，
+也不用排队等新进程启动。网关的 upstream 只有一个地址，看不到实例切换，不需要主动健康检查、
+发布不 reload。不用 SO_REUSEPORT：每个 socket 有自己的队列，关闭时队列里已握手的连接被 RST，内核 5.14 的
+`tcp_migrate_req` 才能迁移，CentOS 7 没有。
+
+两个实例共享端口，外部探测分不清实例，**READY 是唯一的就绪信号**。指标照常在前台、后台端口的 `/metrics` 由 Alloy 在本机
+抓取：抓到的是当时在线的实例，1、2 是同一个服务的前后两任，是一条连续的序列（交接的几秒里可能交替抓到新旧进程）。
+
+单元里三项是必须的：
+- `NonBlocking=yes`：默认 no 时 systemd 在启动新实例前清除共享 socket 的 `O_NONBLOCK`，正在服务的实例的 accept 被改成阻塞；
+- `[Service]` 段的 `StartLimitInterval=0`：启动频率限制被触发时，systemd 252 起会让 `<项目>-api.socket` 失败并关闭，新实例再也起不来，
+  在线实例一停连接即被拒绝；`[Unit]` 段的 `StartLimitIntervalSec=` 在 219 上无效；代价是崩溃循环的实例每秒重启、不会自己停下；
+- `Service=<项目>-api@1.service`（socket 单元里）：219 要求 socket 有对应的服务。只有两个实例都停止后有连接进来时才会拉起它（兜底），
+  交接期间不会触发。
+
+**systemd 219 的限制**（CentOS 7）：没有 `Type=exec`（worker 用 `simple`）；可执行文件路径里的 `%i` 不展开（迁移经
+`/usr/bin/env` 执行）；没有 `FileDescriptorName=`（进程按地址认领 socket，`ListenStream=` 的顺序无关；认领不了、重复、
+后台 socket 的有无与后台是否启动不一致时启动失败）；没有 `systemd-run --wait/--pipe`（子命令用 `app-cmd`）；启动即退出的进程日志没有 `_SYSTEMD_UNIT`
+（排查用 `journalctl -t <项目>-api-1`，单元都设了 `SyslogIdentifier=`）；不设置 `JOURNAL_STREAM`（日志级别见
+[observability.md](observability.md) 的"排查"）；`somaxconn` 默认 128，要装 `sysctl/90-somaxconn.conf`，并在 socket 里写 `Backlog=4096`。
+
+**发布**：`/opt/<项目>/bin/rollout.sh v1.2.3`，顺序是迁移 → 原子切换 `current` → worker（等它的 `/healthz`）→ api（启动不在线的
+那个实例、等 READY、观察 5 秒、停掉在线的），1、2 轮流上线，在线实例被 `enable`、下线的被 `disable`。观察期每秒检查新实例
+仍在运行且 `MainPID` 没变（219 没有 `NRestarts`），发现被 `Restart=` 重新拉起也算失败。发布前的版本记在
+`/opt/<项目>/.rollout-prev`，发布或回滚成功、或退回后删除；`--restart` 不换版本，不动它。worker 必须先于 api，见
+[queue.md](queue.md) 的"发布顺序"。实测一次约 10–12 秒。同时只允许一个 `rollout.sh`（`flock`）；在 tmux/screen 里执行：
+ssh 断开会中断脚本，已提交给 systemd 的操作会继续，重跑脚本时会先收敛实例状态。`systemctl stop` 打印的
+"can still be activated by <项目>-api.socket" 是 systemd 的正常提示。
+
+**失败时自动退回**：新 worker、新 api 起不来，或新 api 在观察期内退出，脚本停掉新实例，把 `current`（发布时还有 worker）
+切回原版本，在线实例一直在服务。必须切回：兜底拉起、崩溃重启、开机启动的都是 `current` 指向的版本。上次发布中断过时
+（`.rollout-prev` 还在），退回目标是中断前的版本，而不是中断时已经切过去的 `current`。
+
+**回滚**：`rollout.sh --rollback v1.2.2`，跳过迁移，顺序是切换 `current` → api → worker（与发布相反：仍在线的新 api 入队的任务
+不能交给旧 worker）。不能不带参数重跑旧版本：旧二进制执行 `migrate up` 时数据库已在新版本，旧二进制里没有这个迁移文件，
+golang-migrate 直接报错。前提是迁移遵守 expand/contract，旧代码能跑在新表结构上。
+
+**重启**：`rollout.sh --restart` 不换版本换一个 api 进程。不要用 `systemctl restart <项目>-api@1`：单实例 restart 是先停后起，
+请求不会失败，但要在队列里等排空 + 初始化的时间。
+
+**子命令**（`staff create`、`queue cancel-orphans`）：`/opt/<项目>/bin/app-cmd staff create -username root`，以项目用户执行
+`/opt/<项目>/current/api`，env 文件逐行 `export`，不经 shell 求值，输出和退出码直接回到终端。
+
+**首次部署**：全机一份的文件只装一次（CentOS 7 装 `sysctl/90-somaxconn.conf`；OpenResty 的 `http.conf`、`snippets/proxy.conf`；
+Alloy 的 `host.alloy`）。每个项目：`render.sh` 生成并按它打印的命令安装（建用户、目录、单元、`app.env`、网关和 Alloy 片段），
+上传版本到 `/opt/<项目>/releases/<版本>/`，`ln -sfn releases/<版本> /opt/<项目>/current`，`systemctl start <项目>-migrate@<版本>`，
+`systemctl enable --now <项目>-api.socket <项目>-worker`，`systemctl enable --now <项目>-api@1`；之后一律用 `rollout.sh`。
+**不要在发布中 stop/restart `<项目>-api.socket`**：会关闭 systemd 持有的 fd，`Requires=` 连带停止实例；改端口是维护操作（停实例
+→ 重新渲染、替换 socket 和 `app.env` → `daemon-reload` → 启动），期间服务中断。
 
 **故障**：
 
 | 情况 | 结果 | 处理 |
 |---|---|---|
 | 迁移失败 | 实例都没动 | 修迁移后重跑 |
-| 新 worker 起不来 | api 都没动，任务在库里排队 | 查 `journalctl -u app-worker`；修复后重跑或 `--rollback` |
-| 新 api 起不来 | 该实例被停止，另一个继续服务 | 查日志；`--rollback` |
-| api 实例崩溃 | 在途的幂等请求被网关重试，POST/PATCH 失败；之后全部转到另一个；systemd 2s 后拉起 | 无需处理 |
+| 新 worker 起不来 | `current` 和 worker 切回原版本，api 都没动 | 查 `journalctl -t <项目>-worker`；修复后重跑 |
+| 新 api 初始化失败、依赖一直不可用（`TimeoutStartSec=60` 内没有 READY）、观察期内退出 | 新实例被停掉，`current`（发布时还有 worker）切回原版本，在线实例继续服务 | 查 `journalctl -t <项目>-api-<1/2>` |
+| socket 地址与配置不符、fd 数量与后台是否启动不一致 | 新实例启动失败，同上 | 对照 `<项目>-api.socket` 的 `ListenStream=` 与 `HTTP_ADDR`、`HTTP_ADMIN_ADDR` |
+| api 进程崩溃 | 崩溃那一刻在途的请求失败；之后的连接不被拒绝，在 socket 队列里等待：1 秒后 systemd 重启进程，初始化和依赖检查通过后开始处理 | 无需处理 |
+| 没有实例在 accept（崩溃循环、依赖一直不可用） | 请求挂起到网关 `proxy_read_timeout`（30s）才失败，不会快速失败；网关连接数随之累积 | 尽快恢复一个实例；崩溃循环的实例要显式 stop 或回滚 |
 | worker 被 `kill -9` | 崩溃时 `running` 的任务 1 小时后由 river 的 rescuer 救回重试 | 等 rescuer，不手工改任务状态 |
+| 误停 `<项目>-api.socket` | `Requires=` 连带停止实例，服务中断 | `systemctl start <项目>-api.socket <项目>-api@<在线实例>` |
 
-前置：`HTTP_TRUSTED_PROXY=true`；配置 Redis（否则限流额度是配置值 × 2）；数据库连接数按两个 api 实例常驻加 worker
-计算；Alloy 的运行用户加入 `systemd-journal` 组；抓取失败告警的 `for` 大于一次发布的时长（如 `2m`）。
+前置：Postgres 版本按 [database.md](database.md) 的"选型"；`HTTP_TRUSTED_PROXY=true`；配置 Redis（交接期间两个
+进程各自按内存计数限流）；数据库连接数按两个 api 实例 + worker 计算（交接期间短暂并存，一般十余秒）；Alloy 的运行用户加入
+`systemd-journal` 组。
+SELinux enforcing 的机器上未验证：若 OpenResty 以 `httpd_t` 受限运行，需要 `setsebool -P httpd_can_network_connect 1`。
 
 ## 版本固定
 

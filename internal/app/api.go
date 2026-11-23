@@ -15,6 +15,7 @@ import (
 	"app.local/internal/platform/httpserver"
 	"app.local/internal/platform/metrics"
 	"app.local/internal/platform/ratelimit"
+	"app.local/internal/platform/systemd"
 )
 
 // shutdownTimeout 是排空之后的关停上限：要大于 HTTP 优雅关闭的 15s 和队列的强制停止，给它们留出完成的时间。
@@ -27,7 +28,8 @@ func apiShutdownTimeout(cfg *config.Config) time.Duration {
 }
 
 // RunAPI 运行 HTTP API 进程，阻塞到 ctx 取消或组件出错。
-// 日志写 stdout。
+// 日志写 stdout。socket activation（HTTP_SOCKET_ACTIVATION）时先取得 systemd 传来的监听 socket，组件构造完、
+// 依赖检查通过后才向 systemd 发 READY=1：两个实例共享端口，外部探测分不清实例，READY 是唯一的就绪信号。
 func RunAPI(ctx context.Context, cfg *config.Config) error {
 	id, log := newProcess(cfg, "api", os.Stdout)
 	configs, err := loadModuleConfigs(cfg.Source)
@@ -35,35 +37,80 @@ func RunAPI(ctx context.Context, cfg *config.Config) error {
 		return err
 	}
 	log.InfoContext(ctx, "starting api", slog.Any("config", configs.Redacted(cfg)))
+	lns := &apiListeners{}
+	if cfg.HTTP.SocketActivation {
+		if lns, err = inheritListeners(cfg.HTTP); err != nil {
+			return err
+		}
+	}
+	defer lns.close()
 	in, err := NewInfra(ctx, cfg, id, log)
 	if err != nil {
 		return err
 	}
 	defer in.Close(ctx)
 
-	components, err := apiComponents(in, buildModules(in, configs))
+	mods := buildModules(in, configs)
+	if !cfg.HTTP.SocketActivation {
+		if err := bindListeners(lns, cfg.HTTP, adminEnabled(in, mods.adminRegistrars())); err != nil {
+			return err
+		}
+	}
+	components, err := apiComponents(in, mods, lns)
 	if err != nil {
 		return err
+	}
+	if cfg.HTTP.SocketActivation {
+		if err := waitDependencies(ctx, in.Pingers, log); err != nil {
+			return err
+		}
+		if err := systemd.Notify(systemd.Ready); err != nil {
+			return fmt.Errorf("app: %w", err)
+		}
+		log.InfoContext(ctx, "api ready: notified systemd")
 	}
 	return lifecycle.Run(ctx, apiShutdownTimeout(cfg), components...)
 }
 
-// apiComponents 是 api 进程的 HTTP server：前台总是启动；后台只在配置了地址时启动，
-// 未配置时不监听后台端口。
-func apiComponents(in *Infra, mods *Modules) ([]lifecycle.Component, error) {
+// bindListeners 是自己绑定端口的部署（非 socket activation）：前台总是绑定；后台只在启用时绑定，否则不监听后台端口。
+func bindListeners(lns *apiListeners, cfg config.HTTPConfig, adminOn bool) error {
+	var err error
+	if lns.front, err = httpserver.Listen(cfg.Addr); err != nil {
+		return fmt.Errorf("app: %w", err)
+	}
+	if adminOn {
+		if lns.admin, err = httpserver.Listen(cfg.AdminAddr); err != nil {
+			return fmt.Errorf("app: %w", err)
+		}
+	}
+	return nil
+}
+
+// apiComponents 是 api 进程的 HTTP server：前台总是启动；后台只在配置了地址且有后台路由时启动。lns 是已就绪的
+// 监听 socket：socket activation 时来自 systemd，否则由 bindListeners 绑定。
+func apiComponents(in *Infra, mods *Modules, lns *apiListeners) ([]lifecycle.Component, error) {
+	socket := in.Config.HTTP.SocketActivation
+	adminOn := adminEnabled(in, mods.adminRegistrars())
+	if err := checkAdminSocket(adminOn, lns); err != nil {
+		return nil, err
+	}
 	e, err := httpserver.New(apiServerDeps(in, mods))
 	if err != nil {
 		return nil, fmt.Errorf("app: build http server: %w", err)
 	}
-	drain := in.Config.HTTP.ShutdownDrain
-	components := []lifecycle.Component{httpserver.Component("api", e, in.Config.HTTP.Addr, drain)}
-
-	if adminEnabled(in, mods.adminRegistrars()) {
-		admin, err := httpserver.NewAdmin(adminServerDeps(in, mods))
-		if err != nil {
+	var adminServer *echo.Echo
+	adminDeps := adminServerDeps(in, mods)
+	if adminOn {
+		if adminServer, err = httpserver.NewAdmin(adminDeps); err != nil {
 			return nil, fmt.Errorf("app: build admin server: %w", err)
 		}
-		components = append(components, httpserver.Component("admin", admin, in.Config.HTTP.AdminAddr, drain))
+	}
+
+	// socket activation 时 socket 由轮流上线的实例共享：收到停止信号立即不再 accept，新连接由接班的实例接走。
+	stop := httpserver.Stop{Drain: in.Config.HTTP.ShutdownDrain, SharedListener: socket}
+	components := []lifecycle.Component{httpserver.Component("api", e, lns.front, stop)}
+	if adminOn {
+		components = append(components, httpserver.Component("admin", adminServer, lns.admin, stop))
 	}
 	return components, nil
 }

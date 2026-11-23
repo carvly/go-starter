@@ -10,4 +10,8 @@
 
 ## 条目
 
-（暂无。）
+- **多个项目共用观测后端时 `service_name` 相同**（2026-11-23，信号：文档和代码对不上的潜在风险）。`process.New` 的服务名固定是
+  `api`/`worker`，tracing 有意不读 `OTEL_SERVICE_NAME`/`OTEL_RESOURCE_ATTRIBUTES`。裸机的同机多项目靠 Alloy 给指标和日志加
+  `project` 标签、`INSTANCE_ID` 带项目名区分，但 trace 的资源属性里没有项目维度，Tempo 里不同项目的 api 会混在同一个
+  service 下。影响：多项目共用 Tempo 时按服务筛 trace 会看到别的项目。建议的反哺去向：给进程身份加一个可配置的项目名
+  （进日志字段、`service_info` 标签和 trace 资源属性），属于可观测性的设计改动，需要单独决定。

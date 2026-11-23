@@ -1,0 +1,45 @@
+// {{name}} 的抓取与日志读取，由 deploy/baremetal/render.sh 生成为 {{name}}.alloy，与全机一份的 host.alloy 放在同一目录。
+// 见 docs/agents/deploy-ci.md 的"裸机发布"。
+
+// 每个端口一个 Registry，内容不重叠：前台（运行时、业务、前台 HTTP 指标）、后台（后台 HTTP 指标）、worker（运行时、业务指标）。
+// api 的端口由轮流上线的 {{name}}-api@1、@2 共享（socket activation），抓到的是当时在线的实例：同一个服务的一条连续序列，
+// 交接的几秒里可能交替抓到新旧进程。service_name 固定是 api/worker，同一台机器或同一套后端上的多个项目靠 project 标签区分。
+// instance 改成"主机名:端口"：默认是抓取地址 127.0.0.1:端口，多台机器时会互相覆盖。
+prometheus.scrape "{{name_id}}" {
+	job_name        = "{{name}}"
+	scrape_interval = "15s"
+	targets         = [
+		{"__address__" = "127.0.0.1:{{api_port}}", "instance" = constants.hostname + ":{{api_port}}", "project" = "{{name}}"},
+		@admin {"__address__" = "127.0.0.1:{{admin_port}}", "instance" = constants.hostname + ":{{admin_port}}", "project" = "{{name}}"},
+		{"__address__" = "127.0.0.1:{{worker_port}}", "instance" = constants.hostname + ":{{worker_port}}", "project" = "{{name}}"},
+	]
+	forward_to = [prometheus.remote_write.default.receiver]
+}
+
+// 按 SYSLOG_IDENTIFIER（单元里的 SyslogIdentifier=）筛选，不按 _SYSTEMD_UNIT：systemd 219 上启动即退出的进程日志没有
+// _SYSTEMD_UNIT，按 unit 筛会丢掉启动失败的原因。
+loki.source.journal "{{name_id}}" {
+	relabel_rules = loki.relabel.{{name_id}}.rules
+	labels        = {project = "{{name}}"}
+	forward_to    = [loki.process.logs.receiver]
+}
+
+loki.relabel "{{name_id}}" {
+	forward_to = []
+
+	rule {
+		source_labels = ["__journal_syslog_identifier"]
+		regex         = "{{name}}-(api-[12]|worker|migrate)"
+		action        = "keep"
+	}
+
+	rule {
+		source_labels = ["__journal_syslog_identifier"]
+		target_label  = "syslog_identifier"
+	}
+	// 级别取 journald 的 PRIORITY：应用检测到 journald 时给每行加了 syslog 优先级前缀（219 上按 stdout 的对端判断）。
+	rule {
+		source_labels = ["__journal_priority_keyword"]
+		target_label  = "level"
+	}
+}

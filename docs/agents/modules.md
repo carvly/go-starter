@@ -181,6 +181,8 @@ postgres 的未导出内容、不能循环 import），`internal/archtest` 只�
 - `modules.go`：模块清单，显式构造，不用运行时注册表、反射或 `init()`；
 - `adapters_*.go`：跨模块适配器，有跨模块同步调用时新建（starter 目前没有）；
 - `api.go` / `worker.go`：组装两个进程的组件列表，交给 `internal/kit/lifecycle` 统一启停；
+- `listeners.go`：api 的监听 socket（socket activation 时继承 systemd 的 socket 并校验）和发 READY 前的依赖检查，见
+  [deploy-ci.md](deploy-ci.md) 的"裸机发布"；
 - `command.go`：`api <模块> <动作>` 子命令的入口，构建和 api 相同的 Infra 与模块，不启动 HTTP。
 
 模块对组合根的扩展点，每种在 `modules.go` 里有一个注册切片，每个用到它的模块占一行：

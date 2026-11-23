@@ -5,6 +5,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"strconv"
@@ -64,6 +65,11 @@ type HTTPConfig struct {
 	// 让前面的网关摘掉这个实例、关掉连接，再优雅关闭。默认 0（立即优雅关闭）；网关后的多实例部署
 	// 必须大于网关 upstream 的 keepalive_timeout 至少 1 秒（见 docs/agents/deploy-ci.md）。
 	ShutdownDrain time.Duration `yaml:"shutdown_drain"`
+
+	// SocketActivation 为 true 时前台、后台端口不自己绑定，而是继承 systemd 按 socket activation 传来的监听 socket
+	// （按地址认领：Addr、AdminAddr），由轮流上线的实例共享；初始化和依赖检查完成后向 systemd 发 READY=1。此时这两个
+	// 地址必须写成 IP:端口，用于认领继承的 socket（见 docs/agents/deploy-ci.md 的"裸机发布"）。
+	SocketActivation bool `yaml:"socket_activation"`
 
 	// GlobalRateLimit 是按 IP 的全局限流，单位：次/秒。
 	GlobalRateLimitPerSecond float64 `yaml:"global_rate_limit_per_second"`
@@ -228,6 +234,7 @@ func applyEnvOverrides(cfg *Config) error {
 		setDuration(&cfg.HTTP.HSTSMaxAge, "HTTP_HSTS_MAX_AGE"),
 		setDuration(&cfg.HTTP.ShutdownDrain, "HTTP_SHUTDOWN_DRAIN"),
 		setBool(&cfg.HTTP.TrustedProxy, "HTTP_TRUSTED_PROXY"),
+		setBool(&cfg.HTTP.SocketActivation, "HTTP_SOCKET_ACTIVATION"),
 		setBool(&cfg.HTTP.APIDocsEnabled, "HTTP_API_DOCS_ENABLED"),
 		setFloat64(&cfg.HTTP.GlobalRateLimitPerSecond, "HTTP_GLOBAL_RATE_LIMIT_PER_SECOND"),
 		applyDBEnv(&cfg.DB),
@@ -296,6 +303,18 @@ func validate(cfg *Config) error {
 	if cfg.HTTP.AdminAddr != "" && cfg.HTTP.AdminAddr == cfg.HTTP.Addr {
 		return fmt.Errorf("config: HTTP_ADMIN_ADDR must differ from HTTP_ADDR (%q): the admin server is a separate listener", cfg.HTTP.Addr)
 	}
+	if cfg.HTTP.SocketActivation {
+		addrs := []struct{ env, addr string }{{"HTTP_ADDR", cfg.HTTP.Addr}, {"HTTP_ADMIN_ADDR", cfg.HTTP.AdminAddr}}
+		for _, a := range addrs {
+			if a.addr == "" && a.env == "HTTP_ADMIN_ADDR" {
+				continue
+			}
+			if !isIPPort(a.addr) {
+				return fmt.Errorf("config: %s must be IP:port like 127.0.0.1:8080 when HTTP_SOCKET_ACTIVATION=true "+
+					"(it is compared with the socket inherited from systemd), got %q", a.env, a.addr)
+			}
+		}
+	}
 	if o := cfg.HTTP.AdminOrigin; o != "" && !IsCanonicalOrigin(o) {
 		return fmt.Errorf("config: HTTP_ADMIN_ORIGIN must be exactly what browsers send as Origin, like https://admin.example.com "+
 			"(lowercase scheme://host[:port], no default port, no path, no user info), got %q", o)
@@ -307,6 +326,11 @@ func validate(cfg *Config) error {
 		}
 	}
 	return nil
+}
+
+func isIPPort(addr string) bool {
+	host, port, err := net.SplitHostPort(addr)
+	return err == nil && net.ParseIP(host) != nil && port != ""
 }
 
 // redactedURL 隐藏 URL 里可能带凭据的 userinfo、query 和 fragment，解析失败时整体隐藏。
@@ -361,6 +385,7 @@ func (c *Config) Redacted() map[string]any {
 		"redis_addr":                  c.Redis.Addr,
 		"redis_password":              redactedIfSet(c.Redis.Password),
 		"http_shutdown_drain":         c.HTTP.ShutdownDrain.String(),
+		"http_socket_activation":      c.HTTP.SocketActivation,
 		"otel_exporter_otlp_endpoint": redactedURL(c.Tracing.OTLPEndpoint),
 	}
 }

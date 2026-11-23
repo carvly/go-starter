@@ -1,0 +1,18 @@
+# {{name}} 的 api 监听 socket，由 deploy/baremetal/render.sh 生成为 {{name}}-api.socket，见 docs/agents/deploy-ci.md 的"裸机发布"。
+# systemd 绑定并持有端口，{{name}}-api@1、@2 经 Sockets= 继承同一个 socket、同一个 accept 队列，发布时轮流接管。
+# 发布中不要 stop/restart 它：会关闭 systemd 持有的 fd，Requires= 连带停止实例。
+[Unit]
+Description={{name}} api listening sockets
+
+[Socket]
+# 进程按地址认领用途（systemd 219 没有 FileDescriptorName=），顺序无关；地址与 {{conf_dir}}/app.env 的 HTTP_ADDR、
+# HTTP_ADMIN_ADDR 一致（render.sh 一并生成）。
+ListenStream=127.0.0.1:{{api_port}}
+@admin ListenStream=127.0.0.1:{{admin_port}}
+# 219 默认 128；实际上限还受 net.core.somaxconn 限制（sysctl/90-somaxconn.conf）。
+Backlog=4096
+# 219 要求 socket 有对应的服务。只在所有实例都停止后有连接进来时才会被拉起（兜底），交接期间不会触发。
+Service={{name}}-api@1.service
+
+[Install]
+WantedBy=sockets.target

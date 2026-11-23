@@ -2,6 +2,7 @@ package app
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	"app.local/internal/kit/lifecycle"
@@ -20,7 +21,7 @@ func componentNames(cs []lifecycle.Component) []string {
 
 func TestAPIComponents_AdminOnlyWhenConfigured(t *testing.T) {
 	in := newZeroInfra()
-	cs, err := apiComponents(in, buildModules(in, testModuleConfigs(t)))
+	cs, err := apiComponents(in, buildModules(in, testModuleConfigs(t)), &apiListeners{front: testListener(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,7 +32,7 @@ func TestAPIComponents_AdminOnlyWhenConfigured(t *testing.T) {
 	in = newZeroInfra()
 	in.Config.HTTP.AdminAddr = "127.0.0.1:0"
 	in.Config.HTTP.AdminOrigin = "https://admin.example.com"
-	cs, err = apiComponents(in, buildModules(in, testModuleConfigs(t)))
+	cs, err = apiComponents(in, buildModules(in, testModuleConfigs(t)), &apiListeners{front: testListener(t), admin: testListener(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,6 +42,45 @@ func TestAPIComponents_AdminOnlyWhenConfigured(t *testing.T) {
 
 	if adminEnabled(in, nil) {
 		t.Error("没有后台接入模块时仍启用了后台监听")
+	}
+}
+
+// socket activation 时 systemd 传来的后台 socket 有无必须与后台是否启动一致。
+func TestAPIComponents_SocketActivation(t *testing.T) {
+	newIn := func(admin bool) *Infra {
+		in := newZeroInfra()
+		in.Config.HTTP.SocketActivation = true
+		if admin {
+			in.Config.HTTP.AdminAddr = "127.0.0.1:8081"
+			in.Config.HTTP.AdminOrigin = "https://admin.example.com"
+		}
+		return in
+	}
+	in := newIn(true)
+	cs, err := apiComponents(in, buildModules(in, testModuleConfigs(t)), &apiListeners{front: testListener(t), admin: testListener(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := componentNames(cs); !slices.Equal(got, []string{"api", "admin"}) {
+		t.Errorf("components = %v, want [api admin]", got)
+	}
+
+	for _, tc := range []struct {
+		name    string
+		admin   bool
+		lns     *apiListeners
+		wantErr string
+	}{
+		{"后台启用但没有后台 socket", true, &apiListeners{front: testListener(t)}, "add ListenStream="},
+		{"后台未启用却有后台 socket", false, &apiListeners{front: testListener(t), admin: testListener(t)}, "remove that ListenStream="},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := newIn(tc.admin)
+			_, err := apiComponents(in, buildModules(in, testModuleConfigs(t)), tc.lns)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("err = %v, want 含 %q", err, tc.wantErr)
+			}
+		})
 	}
 }
 

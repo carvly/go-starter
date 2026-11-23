@@ -140,7 +140,8 @@ internal/
     ratelimit/             Echo 限流的计数存储（Redis GCRA / 内存）
     crypto/                Argon2id、JWT 签发与校验
     oauth/                 第三方登录：浏览器 OAuth 流程与原生 code 换身份（目前只有微信）
-    httpserver/            Echo 构造（前台、后台两个 server）、请求入口（span、X-Trace-Id）、中间件链、错误渲染、HTTP 指标、健康检查、API 文档、排空
+    httpserver/            Echo 构造（前台、后台两个 server）、请求入口（span、X-Trace-Id）、中间件链、错误渲染、HTTP 指标、健康检查、API 文档、排空与关停
+    systemd/               socket activation（继承 systemd 绑定的监听 socket）与就绪通知 sd_notify，只用标准库
     logger/                slog 构造：根 Handler 从 ctx 补关联字段和 trace_id、span_id
     tracing/               进程的 TracerProvider（始终有 trace_id，配置了地址才导出）、网关 trace_id 的接收
     process/               进程身份（service_name/service_version/service_instance_id），日志和指标共用
@@ -160,7 +161,8 @@ api/admin.yaml             后台接口唯一真相源，每个操作带 x-permi
 web/admin/                 后台前端（独立的 pnpm 项目），构建产物经 go:embed 打进 api 二进制
 scripts/                   检查与升级脚本（check-docs.sh、check-versions.sh、check-module-removal.sh 等）
 tools/gen/                 生成器（开发工具，不进运行时）：新资源的各层代码、前端的 meta.gen.ts
-deploy/                    Dockerfile、docker-compose.yml
+deploy/                    Dockerfile、docker-compose.yml；baremetal/ 是裸机部署的模板（systemd 单元、OpenResty、Alloy、发布脚本），
+                           由 render.sh 按项目名和端口渲染，同一台机器可部署多个项目
 ```
 
 ## 一个请求和一个事件怎么走

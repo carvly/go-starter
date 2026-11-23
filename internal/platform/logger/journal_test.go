@@ -3,13 +3,16 @@
 package logger_test
 
 import (
+	"bufio"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"app.local/internal/platform/logger"
 )
@@ -71,6 +74,60 @@ func TestNew_OtherStreamsUnchanged(t *testing.T) {
 				if !strings.HasPrefix(line, "{") {
 					t.Errorf("不应带前缀：%q", line)
 				}
+			}
+		})
+	}
+}
+
+// systemd 231 之前（CentOS 7 的 219）不设置 JOURNAL_STREAM：stdout 是连到 journald stdout socket 的 unix socket 时
+// 同样加前缀；连到别的 unix socket 时不加。
+func TestNew_UnixSocketToJournaldWithoutJournalStream(t *testing.T) {
+	t.Setenv("JOURNAL_STREAM", "")
+	dir, err := os.MkdirTemp("/tmp", "jr") // unix socket 路径有长度上限，t.TempDir() 太长
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	journald := filepath.Join(dir, "stdout")
+	t.Cleanup(logger.SetJournalStdoutSocket(journald))
+
+	for name, tc := range map[string]struct {
+		path       string
+		wantPrefix string
+	}{
+		"journald":  {journald, "<3>{"},
+		"别的 socket": {filepath.Join(dir, "other"), "{"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ln, err := net.Listen("unix", tc.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = ln.Close() })
+			conn, err := net.Dial("unix", tc.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = conn.Close() })
+			f, err := conn.(*net.UnixConn).File()
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = f.Close() })
+			server, err := ln.Accept()
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = server.Close() })
+
+			logger.New("info", f).ErrorContext(t.Context(), "e")
+			_ = server.SetReadDeadline(time.Now().Add(2 * time.Second))
+			line, err := bufio.NewReader(server).ReadString('\n')
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.HasPrefix(line, tc.wantPrefix) {
+				t.Errorf("line = %q, want 前缀 %q", line, tc.wantPrefix)
 			}
 		})
 	}

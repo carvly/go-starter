@@ -333,3 +333,31 @@ func TestLoad_OTLPEndpoint(t *testing.T) {
 		})
 	}
 }
+
+// socket activation 时地址要和继承的 socket 逐个比对，必须写成 IP:端口；不开时照旧（":8080" 这类写法可用）。
+func TestLoad_SocketActivationRequiresIPPort(t *testing.T) {
+	setRequiredEnv(t)
+	cfg, err := config.Load()
+	if err != nil || cfg.HTTP.SocketActivation {
+		t.Fatalf("默认 SocketActivation = %v, err = %v, want false", cfg.HTTP.SocketActivation, err)
+	}
+	t.Setenv("HTTP_SOCKET_ACTIVATION", "true")
+	t.Setenv("HTTP_ADDR", "127.0.0.1:8080")
+	if cfg, err = config.Load(); err != nil || !cfg.HTTP.SocketActivation {
+		t.Fatalf("SocketActivation = %v, err = %v", cfg.HTTP.SocketActivation, err)
+	}
+	for _, tc := range []struct{ env, value string }{
+		{"HTTP_ADDR", ":8080"},
+		{"HTTP_ADDR", "localhost:8080"},
+		{"HTTP_ADMIN_ADDR", ":8081"},
+	} {
+		t.Run(tc.env, func(t *testing.T) {
+			t.Setenv(tc.env, tc.value)
+			t.Setenv("HTTP_ADMIN_ORIGIN", "https://admin.example.com")
+			_, err := config.Load()
+			if err == nil || !strings.Contains(err.Error(), tc.env+" must be IP:port") {
+				t.Fatalf("err = %v, want %s 被拒绝", err, tc.env)
+			}
+		})
+	}
+}

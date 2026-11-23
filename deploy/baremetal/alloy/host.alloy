@@ -1,22 +1,7 @@
-// 应用机上的 Alloy：抓指标、读 journald 日志、接收 trace 并做尾部采样。见 docs/agents/deploy-ci.md 的"裸机双实例发布"
-// 和 docs/agents/observability.md。prometheus.internal、loki.internal、tempo.internal 按实际环境替换。
-// Alloy 的运行用户要加入 systemd-journal 组才能读 journald。
-
-// ---------- 指标 ----------
-// 每个端口一个 Registry，内容不重叠，5 个端口都要抓：前台（运行时、业务、前台 HTTP 指标）、后台（后台 HTTP 指标）、
-// worker（运行时、业务指标）。instance 改成"主机名:端口"：默认是抓取地址 127.0.0.1:端口，多台机器时会互相覆盖。
-prometheus.scrape "app" {
-	job_name        = "app"
-	scrape_interval = "15s"
-	targets         = [
-		{"__address__" = "127.0.0.1:8080", "instance" = constants.hostname + ":8080"},
-		{"__address__" = "127.0.0.1:8081", "instance" = constants.hostname + ":8081"},
-		{"__address__" = "127.0.0.1:8082", "instance" = constants.hostname + ":8082"},
-		{"__address__" = "127.0.0.1:8083", "instance" = constants.hostname + ":8083"},
-		{"__address__" = "127.0.0.1:9090", "instance" = constants.hostname + ":9090"},
-	]
-	forward_to = [prometheus.remote_write.default.receiver]
-}
+// 全机一份（不随项目渲染）：remote_write、Loki 写入、日志的 JSON 解析、接收 trace 并做尾部采样。各项目的抓取和 journald 读取在
+// render.sh 生成的 <项目>.alloy 里，转发到这里的组件；Alloy 以目录方式加载（alloy run /etc/alloy/），各文件合成一份配置。
+// 见 docs/agents/deploy-ci.md 的"裸机发布"和 docs/agents/observability.md。prometheus.internal、loki.internal、tempo.internal
+// 按实际环境替换。Alloy 的运行用户要加入 systemd-journal 组才能读 journald。
 
 // Prometheus 开 --web.enable-remote-write-receiver；要从指标跳到 trace 再开 --enable-feature=exemplar-storage。
 prometheus.remote_write "default" {
@@ -28,33 +13,9 @@ prometheus.remote_write "default" {
 }
 
 // ---------- 日志 ----------
-// stdout → journald 是唯一事实来源；只收 app-* 的 unit。Loki 标签只放低基数：service_name、level、unit。
-loki.source.journal "app" {
-	relabel_rules = loki.relabel.journal.rules
-	forward_to    = [loki.process.app.receiver]
-}
-
-loki.relabel "journal" {
-	forward_to = []
-
-	rule {
-		source_labels = ["__journal__systemd_unit"]
-		regex         = "app-.*\\.service"
-		action        = "keep"
-	}
-
-	rule {
-		source_labels = ["__journal__systemd_unit"]
-		target_label  = "unit"
-	}
-	// 级别取 journald 的 PRIORITY：应用检测到 journald 时给每行加了 syslog 优先级前缀。
-	rule {
-		source_labels = ["__journal_priority_keyword"]
-		target_label  = "level"
-	}
-}
-
-loki.process "app" {
+// stdout → journald 是唯一事实来源；各项目的 <项目>.alloy 按 SYSLOG_IDENTIFIER 读取并打上 project、syslog_identifier、level 标签后
+// 转发到这里。Loki 标签只放低基数：project、service_name、level、syslog_identifier。
+loki.process "logs" {
 	stage.json {
 		expressions = {service_name = "", trace_id = "", span_id = "", link_trace_id = ""}
 	}

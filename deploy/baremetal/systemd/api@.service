@@ -1,26 +1,38 @@
-# api 实例（%i 为 a、b），见 docs/agents/deploy-ci.md 的"裸机双实例发布"。
-# 端口在 /etc/app/api-%i.env：a 是 HTTP_ADDR=127.0.0.1:8080 HTTP_ADMIN_ADDR=127.0.0.1:8081，
-# b 是 8082、8083；必须与 OpenResty 的 upstream、Alloy 的抓取目标、rollout.sh 的端口一致。
+# {{name}} 的 api 实例（%i 为 1、2），由 render.sh 生成为 {{name}}-api@.service。平时只有一个在线，发布时由 rollout.sh 轮流接管，
+# 见 docs/agents/deploy-ci.md 的"裸机发布"。
 [Unit]
-Description=app api (%i)
-After=network-online.target
+Description={{name}} api (%i)
+Requires={{name}}-api.socket
+After={{name}}-api.socket network-online.target
 Wants=network-online.target
 
 [Service]
-Type=exec
-User=app
-Group=app
-EnvironmentFile=/etc/app/app.env
-EnvironmentFile=/etc/app/api-%i.env
-# HTTP_SHUTDOWN_DRAIN 必须 >= OpenResty upstream 的 keepalive_timeout(4s) + 1s，且覆盖主动检查摘除实例的时间（约 3s）。
-# %H 是主机名：INSTANCE_ID 即日志的 service_instance_id，多台机器时也不重复。
-Environment=APP_ENV=production HTTP_TRUSTED_PROXY=true HTTP_SHUTDOWN_DRAIN=6s INSTANCE_ID=%H-api-%i
-ExecStart=/opt/app/current/api
+# READY=1 由进程在依赖检查通过后发出，systemctl start 阻塞到那时。
+Type=notify
+NotifyAccess=main
+Sockets={{name}}-api.socket
+# 必须：默认 no 时 systemd 会清除共享 socket 的 O_NONBLOCK，把正在服务的另一个实例的 accept 变成阻塞。
+NonBlocking=yes
+# 必须：启动频率限制被触发时，systemd 252 起会让 {{name}}-api.socket 失败并关闭，新实例再也起不来。
+# 写在 [Service] 段是 219 的写法，新版本兼容；[Unit] 的 StartLimitIntervalSec= 在 219 上无效。
+StartLimitInterval=0
+User={{name}}
+Group={{name}}
+EnvironmentFile={{conf_dir}}/app.env
+# 下面这些键不能出现在 app.env 里：EnvironmentFile= 的值会覆盖 Environment=（与书写顺序无关），rollout.sh 会检查。
+# HTTP_SHUTDOWN_DRAIN 必须 >= OpenResty upstream 的 keepalive_timeout(4s) + 1s。
+# %H 是主机名：INSTANCE_ID 即日志的 service_instance_id，带上项目名，同一台机器上的多个项目、多台机器都不重复。
+Environment=APP_ENV=production HTTP_TRUSTED_PROXY=true HTTP_SOCKET_ACTIVATION=true HTTP_SHUTDOWN_DRAIN=5s INSTANCE_ID=%H-{{name}}-api-%i
+ExecStart={{root}}/current/api
+# 219 上启动即退出的进程日志没有 _SYSTEMD_UNIT，排查用 journalctl -t {{name}}-api-1。
+SyslogIdentifier={{name}}-api-%i
 KillSignal=SIGTERM
-# 关停上限：排空 6s + 20s + tracing 关停 3s = 29s，留余量。
+# 初始化 + 依赖检查的上限；超时即启动失败，在线实例不受影响。
+TimeoutStartSec=60
+# 关停上限：等 Serve 返回 ≤1s + 排空 ≤5s + 等连接 ≤15s + tracing 关停 3s = 24s，留余量。
 TimeoutStopSec=40
 Restart=on-failure
-RestartSec=2
+RestartSec=1
 LimitNOFILE=65536
 
 [Install]

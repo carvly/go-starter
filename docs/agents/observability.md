@@ -1,6 +1,6 @@
 # 可观测性：命名约定、日志、指标、tracing、健康检查
 
-事实来源：`internal/platform/tracing/`、`internal/platform/httpserver/trace.go`、`internal/platform/oauth/wechat.go`、`internal/platform/process/`、`internal/platform/metrics/`、`internal/platform/httpserver/metrics.go`、`internal/platform/logger/`、`internal/kit/logctx/`、`internal/platform/buildinfo/`、`internal/platform/queue/logfields.go`、`internal/platform/httpserver/identity.go`、`internal/platform/httpserver/health.go`、`internal/platform/healthcheck/`、`internal/platform/httpserver/server.go`
+事实来源：`internal/platform/tracing/`、`internal/platform/httpserver/trace.go`、`internal/platform/oauth/wechat.go`、`internal/platform/process/`、`internal/platform/metrics/`、`internal/platform/httpserver/metrics.go`、`internal/platform/logger/`、`internal/kit/logctx/`、`internal/platform/buildinfo/`、`internal/platform/queue/logfields.go`、`internal/platform/httpserver/identity.go`、`internal/platform/httpserver/health.go`、`internal/platform/healthcheck/`、`internal/platform/httpserver/server.go`、`internal/app/listeners.go`
 
 ## 命名约定：日志、指标用同一套名字
 
@@ -118,20 +118,22 @@ HTTP 错误处理器按状态码定级别（`internal/platform/httpserver/errors
 
 ### 排查
 
-日志是一行一个 JSON 对象，用 jq 过滤。在 systemd 下运行时由 journald 收集，`-u` 支持通配，
-多个实例按时间合并输出：
+日志是一行一个 JSON 对象，用 jq 过滤。在 systemd 下运行时由 journald 收集。裸机部署的单元都设了 `SyslogIdentifier=`
+（`<项目>-api-1`、`<项目>-api-2`、`<项目>-worker`、`<项目>-migrate`，以项目 myshop 为例），按它查：`-t` 可以重复，多个实例按时间合并输出。
+systemd 219（CentOS 7）上启动后立即退出的进程，日志没有 `_SYSTEMD_UNIT`，`journalctl -u` 查不到，启动失败的原因只能用 `-t` 看：
 
 ```bash
-journalctl -u '<服务名>@*' -f                                     # 跟踪全部实例
-journalctl -u '<服务名>@*' -o cat --since -1h | jq -c 'select(.trace_id=="<id>" or .link_trace_id=="<id>")'
-journalctl -u '<服务名>@*' -p err --since -1h -o cat            # 只看 Error（-p warning 含 Warn）
-journalctl -u '<服务名>@*' -g '"user_id":"<id>"'                   # -g 按正则匹配日志内容
-journalctl -u '<服务名>@*' -o json | jq -r '[._SYSTEMD_UNIT, .MESSAGE] | @tsv'   # 带上来自哪个实例
+journalctl -t myshop-api-1 -t myshop-api-2 -f                                  # 跟踪全部实例
+journalctl -t myshop-api-1 -t myshop-api-2 -o cat --since -1h | jq -c 'select(.trace_id=="<id>" or .link_trace_id=="<id>")'
+journalctl -t myshop-api-1 -t myshop-api-2 -p err --since -1h -o cat           # 只看 Error（-p warning 含 Warn）
+journalctl -t myshop-api-1 -t myshop-api-2 -g '"user_id":"<id>"'               # -g 按正则匹配日志内容
+journalctl -t myshop-api-1 -t myshop-api-2 -o json | jq -r '[.SYSLOG_IDENTIFIER, .MESSAGE] | @tsv'   # 带上来自哪个实例
 ```
 
-`-p` 能用，是因为 `logger.New` 检测到输出就是 systemd 接到 journald 的那条流（`JOURNAL_STREAM` 与 stdout 的
-设备号:inode 相同）时，在每行前加 syslog 优先级前缀（Error `<3>`、Warn `<4>`、Info `<6>`、Debug `<7>`），journald 据此
-设置优先级并去掉前缀，`-o cat` 看到的仍是纯 JSON。终端、容器和被重定向的输出不加前缀。
+`-p` 能用，是因为 `logger.New` 检测到输出就是 systemd 接到 journald 的那条流时，在每行前加 syslog 优先级前缀（Error `<3>`、
+Warn `<4>`、Info `<6>`、Debug `<7>`），journald 据此设置优先级并去掉前缀，`-o cat` 看到的仍是纯 JSON。检测方法：systemd 231 起
+看 `JOURNAL_STREAM` 是否与 stdout 的设备号:inode 相同；更早的 systemd（219）不设置它，改看 stdout 是否是连到
+`/run/systemd/journal/stdout` 的 unix socket。终端、容器和被重定向的输出不加前缀。
 
 ## 指标
 
@@ -139,6 +141,9 @@ journalctl -u '<服务名>@*' -o json | jq -r '[._SYSTEMD_UNIT, .MESSAGE] | @tsv
   进程的 Registry（`metrics.NewRuntimeRegistry`，由 `NewInfra` 构造，挂在 `Infra.Metrics`）带 Go 运行时、进程指标、
   `service_info` 和业务自定义指标，由 api 的前台端口、worker 的内部端口（`HTTP_INTERNAL_ADDR`，默认 `:9090`）输出；
   api 的后台端口用自己的 Registry（`metrics.NewRegistry`），只有 `service_info` 和后台的 HTTP 指标；
+- **socket activation 时端口由轮流上线的实例共享**（见 [deploy-ci.md](deploy-ci.md) 的"裸机发布"）：`/metrics` 仍在前台、后台端口，
+  抓到的是当时在线的实例。1、2 是同一个服务的前后两任，是一条连续的序列；交接的几秒里可能交替抓到新旧进程，新进程的计数器
+  从 0 开始，按一次重置处理；
 - **两种 Registry 的归属不同**：`Infra.Metrics` 属于进程，每个进程**恰好由一个端口**输出（组合根 `internal/app` 决定是哪个）；
   端口自己的 Registry 只装这个端口的 HTTP 指标。由此：
   - 后台模块的自定义指标也注册进 `Infra.Metrics`，在 api 的**前台端口**输出，不在后台端口；
@@ -218,7 +223,8 @@ http_server_request_duration_seconds{server, method, route, status}
 - otelpgx、otelriver 不传 MeterProvider 时退回 otel 全局 provider，两处都显式传 noop（`newPgxTracer`、`queue.NewClient`），
   指标只走 Prometheus；
 - Collector 的尾部采样：出错的全保留、慢的全保留、其余按比例。一条 trace 只出自一个进程，每台机器本机的 Alloy 就能看全，
-  不需要按 trace_id 负载均衡；示例见 `deploy/baremetal/alloy/config.alloy`。
+  不需要按 trace_id 负载均衡；示例见 `deploy/baremetal/alloy/host.alloy`（全机一份），各项目的抓取和日志读取在
+  `deploy/baremetal/alloy/project.alloy` 渲染出的片段里，打 `project` 标签区分同机的多个项目（`service_name` 固定是 api/worker）。
 
 ## 健康检查
 
@@ -226,7 +232,10 @@ http_server_request_duration_seconds{server, method, route, status}
 - `/readyz`：readiness，逐个 Ping 依赖（数据库，配置了 Redis 时还有 Redis），任一失败
   返回 503。所在 server 处于排空期（`HTTP_SHUTDOWN_DRAIN`，见 [deploy-ci.md](deploy-ci.md)）时直接返回 503
   （`code: draining`）：`httpserver.Component` 在请求 ctx 里标记排空，由 `RegisterReadyz` 判断。api 的前台和后台端口
-  都挂（网关按端口主动探测）；worker 没有"要不要把流量路由过来"这个概念，不挂；
+  都挂（编排器、本机排查按端口探测）；worker 没有"要不要把流量路由过来"这个概念，不挂；
+- socket activation 时两个实例共享端口，外部探测 `/readyz` 分不清实例，就绪改由进程判断：发 `READY=1` 之前用同一组 `Pinger`
+  确认依赖可用（`internal/app/listeners.go` 的 `waitDependencies`，失败每秒重试，直到 systemd 的 `TimeoutStartSec` 终止进程）。
+  连接池是惰性建连的，不检查的话库连不上也会发出 READY。非 socket 模式不做这一步，阻塞在 Serve 之前会让 `/healthz` 无响应；
 - 依赖列表在 `internal/app/infra.go` 的 `Pingers`；
 - distroless 镜像里没有 curl，Dockerfile 的 HEALTHCHECK 用二进制自己的 `healthcheck`
   子命令（`internal/platform/healthcheck`）。纯 docker/compose 判定 unhealthy 后不会

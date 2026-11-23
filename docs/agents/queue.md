@@ -8,7 +8,7 @@
 
 `riverqueue/river`（Postgres 上的任务队列）。入队和业务写入在同一个事务里提交，
 语义上替代手写 outbox 表；重试（指数退避）、唯一性、定时任务都用 river 自带能力，
-不另接 cron 库。river 的表由 `internal/platform/queue/migrations/0001_river_queue.up.sql` 创建。
+不另接 cron 库。river 的表由 river 自己的迁移器（`rivermigrate`）随 `api migrate up` 创建，见 [database.md](database.md) 的"选型"。
 
 不在 river 之外另写 outbox 表或自己的轮询消费者：两套投递机制并存，重试和幂等要各自保证一遍。
 
@@ -84,6 +84,11 @@ river 只在选出的 leader 上调度，不会重复入队。例子：
 
 两者都设了 `RunOnStart`。
 
+**间隔每次 worker 重启都重新计时**：`river.PeriodicInterval` 从新 leader 启动时开始计时，不记得上一次执行的时间
+（river 的 `NewPeriodicJob` 文档："without regard for the state of the last scheduler"）。发布会重启 worker，
+发布比间隔更频繁时，没设 `RunOnStart` 的任务一次也跑不到，而且没有任何报错。所以间隔可能长于发布周期的任务（按天、
+按周）必须设 `RunOnStart`，任务本身要能接受每次发布后多跑一次。
+
 ## 进程
 
 worker 进程（`internal/app/worker.go`）运行两个组件：river 消费 client 和只有
@@ -94,9 +99,10 @@ ctx；整个进程的关停上限是 20 秒（`internal/app/api.go` 的 `shutdow
 停完就调用 `StopAndCancel`，再最多等 5 秒（`internal/platform/queue/component.go` 的
 `hardStopTimeout`）。
 
-## 发布顺序：worker 先于 api
+## 发布顺序：worker 先于 api，回滚反过来
 
-发布期间新旧版本并存。顺序是迁移 → worker → api：
+发布期间新旧版本并存。顺序是迁移 → worker → api；回滚是 api → worker（跳过迁移）：仍在线的新 api 入队的任务同样不能交给
+旧 worker。裸机的 `deploy/baremetal/rollout.sh` 按这个顺序执行（见 [deploy-ci.md](deploy-ci.md) 的"裸机发布"）。
 
 - 新 api 入队的任务必须由新 worker 处理。反过来，旧 worker 会忽略事件新增的字段、按旧逻辑把任务做完，
   新字段的效果静默丢失；不认识的新事件类型报 `UnknownJobKindError`，按退避重试到 worker 升级；
