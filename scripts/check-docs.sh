@@ -98,11 +98,9 @@ for f in "${files[@]}"; do
 	check_links "$f"
 done
 
-# river 导出的 0006 不手改，里面的 URL 也不是仓库路径。左边界排除 URL 和单词中间的子串
-# （https://example.com/docs/x、my_api/x）。
-for f in internal/platform/queue/migrations/*.sql internal/modules/*/migrations/*.sql; do
+# 迁移文件注释里引用的仓库路径也必须存在。左边界排除 URL 和单词中间的子串（https://example.com/docs/x、my_api/x）。
+for f in internal/modules/*/migrations/*.sql; do
 	[ -f "$f" ] || continue
-	case "$f" in *_river_queue.*) continue ;; esac
 	check_refs "$f" < <(awk '{
 		s = $0
 		while (match(s, /(^|[^A-Za-z0-9_\/.:-])(internal|cmd|scripts|api|migrations|deploy|configs|docs)\/[A-Za-z0-9_.\/-]*[A-Za-z0-9_]/)) {

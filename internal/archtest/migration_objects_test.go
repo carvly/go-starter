@@ -2,10 +2,8 @@ package archtest
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strings"
 	"testing"
 )
@@ -24,36 +22,8 @@ func migrationModule(name string) string {
 		if part == "modules" && i+1 < len(parts) {
 			return parts[i+1]
 		}
-		if part == "platform" {
-			return "platform"
-		}
 	}
 	return ""
-}
-
-func loadAllMigrationFiles() ([]migrationFile, error) {
-	var names []string
-	for _, pattern := range []string{
-		filepath.Join(repoRoot(), "internal", "platform", "queue", "migrations", "*.sql"),
-		filepath.Join(repoRoot(), "internal", "modules", "*", "migrations", "*.sql"),
-	} {
-		matches, err := filepath.Glob(pattern)
-		if err != nil {
-			return nil, err
-		}
-		names = append(names, matches...)
-	}
-	slices.Sort(names)
-	files := make([]migrationFile, 0, len(names))
-	for _, name := range names {
-		content, err := os.ReadFile(name)
-		if err != nil {
-			return nil, err
-		}
-		rel, _ := filepath.Rel(repoRoot(), name)
-		files = append(files, migrationFile{name: filepath.ToSlash(rel), content: string(content)})
-	}
-	return files, nil
 }
 
 func longestNamedTable(name string, owner map[string]string) string {
@@ -82,8 +52,8 @@ func migrationObjectViolations(files []migrationFile, owner map[string]string) [
 			if statement == "" {
 				continue
 			}
-			if module != "platform" && !allowedMigrationStatement.MatchString(statement) {
-				out = append(out, fmt.Sprintf("%s：模块迁移只允许表、索引、注释、数据修改和 lock_timeout；共享对象放到 platform 迁移：%s", file.name, firstSQLWords(statement)))
+			if !allowedMigrationStatement.MatchString(statement) {
+				out = append(out, fmt.Sprintf("%s：模块迁移只允许表、索引、注释、数据修改和 lock_timeout；类型、函数、扩展等共享对象不属于任何模块，不能放进模块迁移：%s", file.name, firstSQLWords(statement)))
 				continue
 			}
 
@@ -125,18 +95,9 @@ func migrationObjectViolations(files []migrationFile, owner map[string]string) [
 
 			for _, table := range tables {
 				tableOwner, ok := owner[table]
-				if module == "platform" {
-					if ok {
-						out = append(out, fmt.Sprintf("%s：platform 迁移不能操作模块 %s 的表 %s", file.name, tableOwner, table))
-					}
-					continue
-				}
 				if !ok || tableOwner != module {
 					out = append(out, fmt.Sprintf("%s：模块 %s 的迁移操作了表 %s（归属 %s）；只能操作本模块在 postgres/tables.go 登记的表", file.name, module, table, tableOwner))
 				}
-			}
-			if module == "platform" {
-				continue
 			}
 			for _, name := range objectNames {
 				table := longestNamedTable(name, owner)
@@ -169,7 +130,7 @@ func firstSQLWords(statement string) string {
 }
 
 func TestTables_MigrationObjectsStayInModule(t *testing.T) {
-	files, err := loadAllMigrationFiles()
+	files, err := loadModuleMigrations("*.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,14 +152,10 @@ func TestMigrationObjectViolations(t *testing.T) {
 		{name: "跨模块数据修改", module: "beta", sql: `DELETE FROM alphas;`, wantBad: true},
 		{name: "共享类型", module: "beta", sql: `CREATE TYPE beta_status AS ENUM ('pending');`, wantBad: true},
 		{name: "锁超时", module: "beta", sql: `SET lock_timeout = '5s'; RESET lock_timeout;`},
-		{name: "platform 不碰模块表", module: "platform", sql: `CREATE TABLE alphas (id uuid);`, wantBad: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			file := migrationFile{name: "internal/modules/" + tt.module + "/migrations/0001_test.up.sql", content: tt.sql}
-			if tt.module == "platform" {
-				file.name = "internal/platform/queue/migrations/0001_test.up.sql"
-			}
 			got := migrationObjectViolations([]migrationFile{file}, owner)
 			if (len(got) > 0) != tt.wantBad {
 				t.Fatalf("violations = %v, wantBad = %v", got, tt.wantBad)

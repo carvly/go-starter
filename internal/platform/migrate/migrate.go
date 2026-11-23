@@ -2,6 +2,7 @@
 package migrate
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -14,10 +15,26 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
-// Source 是一组独立编号的迁移。Name 同时用于日志和版本表名。
+// Source 是一组独立编号的迁移，FS 与 Migrator 二选一。Name 用于日志和 -module 参数，FS 来源的版本表是
+// schema_migrations_<Name>。
 type Source struct {
 	Name string
-	FS   fs.FS
+	// FS 下的 migrations/ 目录由 golang-migrate 执行：每个文件一个事务。
+	FS fs.FS
+	// Migrator 是自带迁移器的来源（如 river 的 rivermigrate）：按它自己的版本表和事务边界执行，Runner 只负责调用。
+	// 第三方库的表结构交给库自己的迁移器，不导出成 SQL 文件：库的迁移按自己的事务边界设计（river 每个版本一个事务），
+	// 合并导出后放进一个事务执行会破坏这个前提，升级库时也要记得手工补导出。
+	Migrator Migrator
+}
+
+// Migrator 是自带迁移器的来源。
+type Migrator interface {
+	// Up 执行全部未执行的迁移。
+	Up(ctx context.Context, dsn string) error
+	// Down 回退一步。
+	Down(ctx context.Context, dsn string) error
+	// Version 返回当前版本，没有执行过时为 0。
+	Version(ctx context.Context, dsn string) (uint, error)
 }
 
 // Version 是一个来源的当前迁移状态。
@@ -40,8 +57,8 @@ func NewRunner(dsn string, sources []Source) (*Runner, error) {
 		if !sourceName.MatchString(src.Name) {
 			return nil, fmt.Errorf("migrate: invalid source name %q", src.Name)
 		}
-		if src.FS == nil {
-			return nil, fmt.Errorf("migrate: source %s has nil FS", src.Name)
+		if (src.FS == nil) == (src.Migrator == nil) {
+			return nil, fmt.Errorf("migrate: source %s must set exactly one of FS and Migrator", src.Name)
 		}
 		if seen[src.Name] {
 			return nil, fmt.Errorf("migrate: duplicate source %s", src.Name)
@@ -86,6 +103,12 @@ func migrationError(src Source, m *gomigrate.Migrate, err error) error {
 
 func (r *Runner) Up() error {
 	for _, src := range r.sources {
+		if src.Migrator != nil {
+			if err := src.Migrator.Up(context.Background(), r.dsn); err != nil {
+				return fmt.Errorf("migrate %s: %w", src.Name, err)
+			}
+			continue
+		}
 		m, db, err := r.open(src)
 		if err != nil {
 			return err
@@ -117,6 +140,12 @@ func (r *Runner) Down(module string) error {
 	if err != nil {
 		return err
 	}
+	if src.Migrator != nil {
+		if err := src.Migrator.Down(context.Background(), r.dsn); err != nil {
+			return fmt.Errorf("migrate %s: %w", src.Name, err)
+		}
+		return nil
+	}
 	m, db, err := r.open(src)
 	if err != nil {
 		return err
@@ -134,6 +163,10 @@ func (r *Runner) Force(module string, version int) error {
 	if err != nil {
 		return err
 	}
+	if src.Migrator != nil {
+		// 自带迁移器的来源每个版本在一个事务里执行并记录，失败时整体回滚，不会留下 dirty 状态，也就不需要 force。
+		return fmt.Errorf("migrate: source %s uses its own migrator, which never leaves a dirty version; force does not apply", src.Name)
+	}
 	m, db, err := r.open(src)
 	if err != nil {
 		return err
@@ -149,6 +182,14 @@ func (r *Runner) Force(module string, version int) error {
 func (r *Runner) Versions() ([]Version, error) {
 	out := make([]Version, 0, len(r.sources))
 	for _, src := range r.sources {
+		if src.Migrator != nil {
+			version, err := src.Migrator.Version(context.Background(), r.dsn)
+			if err != nil {
+				return nil, fmt.Errorf("migrate: version %s: %w", src.Name, err)
+			}
+			out = append(out, Version{Source: src.Name, Version: version})
+			continue
+		}
 		m, db, err := r.open(src)
 		if err != nil {
 			return nil, err

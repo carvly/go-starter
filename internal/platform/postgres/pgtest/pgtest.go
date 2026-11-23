@@ -32,7 +32,7 @@ var (
 	templateOnce   = map[string]func() (string, error){}
 )
 
-// Pool 返回一个连接到全新数据库的连接池。platform 迁移总会先执行，sources 是调用方
+// Pool 返回一个连接到全新数据库的连接池。river 的迁移（queue.Migrations）总会先执行，sources 是调用方
 // 需要的模块迁移；相同来源集合共享一个模板库。
 func Pool(t *testing.T, sources ...migrate.Source) *pgxpool.Pool {
 	t.Helper()
@@ -82,7 +82,7 @@ func createDatabase(t *testing.T, adminDSN, options string) string {
 
 func withPlatform(sources []migrate.Source) []migrate.Source {
 	out := []migrate.Source{queue.Migrations}
-	seen := map[string]bool{"platform": true}
+	seen := map[string]bool{queue.Migrations.Name: true}
 	for _, src := range sources {
 		if !seen[src.Name] {
 			seen[src.Name] = true

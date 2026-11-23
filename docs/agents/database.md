@@ -1,6 +1,6 @@
 # 数据库：建表规范、migration、Repository、缓存、集成测试
 
-事实来源：`internal/modules/*/migrations/`、`internal/platform/queue/migrations/`、`internal/platform/migrate/`、`internal/platform/postgres/`、`internal/platform/cache/`、`internal/modules/*/postgres/`、`internal/archtest/tables_test.go`、`scripts/test-integration.sh`
+事实来源：`internal/modules/*/migrations/`、`internal/platform/queue/migrations.go`、`internal/platform/migrate/`、`internal/platform/postgres/`、`internal/platform/cache/`、`internal/modules/*/postgres/`、`internal/archtest/tables_test.go`、`scripts/test-integration.sh`
 
 设计表结构、改 `internal/modules/<m>/migrations/`、任何模块的 `postgres/` 子包或缓存逻辑之前读这篇。事务边界见
 [transactions.md](transactions.md)。
@@ -11,10 +11,11 @@
 
 - 只有 Postgres（≥ 18，与 `deploy/docker-compose.yml` 一致），驱动是原生 `jackc/pgx/v5`
   （`pgxpool.Pool` / `pgx.Tx`），不经 `database/sql`，不提供 SQLite；
-- schema 由 `golang-migrate` 管理。每个模块的迁移在 `internal/modules/<m>/migrations/`，
-  独立编号、使用 `schema_migrations_<m>` 版本表；river 等 platform 迁移在
-  `internal/platform/queue/migrations/`，使用 `schema_migrations_platform` 并最先执行。
-  `api migrate up|down|version|force` 按组合根的 `migrationSources()` 执行；
+- 模块的 schema 由 `golang-migrate` 管理：每个模块的迁移在 `internal/modules/<m>/migrations/`，独立编号、使用
+  `schema_migrations_<m>` 版本表，每个文件一个事务。river 的表由 river 自己的迁移器 `rivermigrate` 执行
+  （`queue.Migrations`，来源名 `river`，版本记在 `river_migration` 表，每个版本一个事务），最先执行。
+  `api migrate up|down|version|force` 按组合根的 `migrationSources()` 执行；一个来源要么是 golang-migrate 的文件
+  （`migrate.Source` 的 `FS`），要么自带迁移器（`Migrator`）；
 - 连接池在 `internal/platform/postgres/db.go` 构造，整个进程只有一个 pool，
   `MaxConnLifetime` 带 10% 抖动。默认值只是起点，按压测调整。
 
@@ -185,7 +186,8 @@
   platform 的集成测试自己建表（参考 `internal/platform/dbtx/dbtx_integration_test.go`）；
   `internal/app` 是组合根，跨模块集成测试可以直接准备多个模块的数据；
 - 登记的表必须在全部模块迁移执行后存在，一张表不能登记在两个模块；模块迁移只能操作本模块的表，
-  共享数据库对象只能放在 platform 迁移（`internal/archtest/migration_objects_test.go`）；
+  类型、函数、扩展等共享对象不能放进模块迁移（`internal/archtest/migration_objects_test.go`）；目前不属于任何模块的
+  只有 river 的表，由 river 的迁移器执行；
 - 两个模块的表之间不能有外键；一端是模块的表、另一端是没有登记的业务表也算违规（防止忘了
   登记时漏检）。
 
@@ -255,10 +257,12 @@
 - `.down.sql` 只用于本地开发回退；生产环境不执行 down（`DROP TABLE` 不会把数据还回来），
   出问题时新增一条前向 migration 修复。
 - 新表、新列的 `COMMENT ON` 和建表 / 加列写在同一个 migration 里（要求见“注释”一节）。
-- `internal/platform/queue/migrations/0001_river_queue.up.sql` / `.down.sql` 是 river 自己的队列表，分别由
-  `river migrate-get --all --exclude-version 1 --up` / `--down` 导出，不要手改，也不受本篇
-  建表规范约束。升级 river 后如果它新增了 schema 版本，用 `--version <新版本号> --up` /
-  `--down` 导出成一条新 migration。
+- river 自己的队列表不导出成 SQL 文件，由二进制里的 river 库的迁移器执行（`internal/platform/queue/migrations.go`），
+  不受本篇建表规范约束；升级 river 时新增的 schema 版本随库自动带上。不导出的原因：river 的迁移依赖"上一个版本已经提交"
+  （004 给 `river_job_state` 枚举加 `'pending'`，006 的函数使用它），合并进一个事务执行时只有 Postgres 17 起才允许。
+  `api migrate down -module river` 回退一步；它每个版本在一个事务里执行并记录，失败整体回滚、不会 dirty，`force` 不适用。
+  上线前从 golang-migrate 导出改成这样，本地已执行过旧 `schema_migrations_platform` 的库要删卷重建
+  （`docker compose down -v`）。
 - 本地执行：`export DB_DSN=...` 后 `make migrate-up`；compose 里由 `migrate` service 执行。
 
 ## 写 Repository
@@ -313,7 +317,7 @@
 
 集成测试用 `internal/platform/postgres/pgtest`：每个测试进程起一个 Postgres 容器
 （镜像与 `deploy/docker-compose.yml` 一致，`scripts/check-versions.sh` 检查）。调用方用
-`pgtest.New(t, <模块>.Migrations)` 声明来源；pgtest 总是先执行 platform 迁移，按来源集合缓存
+`pgtest.New(t, <模块>.Migrations)` 声明来源；pgtest 总是先执行 river 的迁移（`queue.Migrations`），按来源集合缓存
 模板库，每个测试再克隆独立数据库。组合根的跨模块测试传 `migrationSources()`。迁移由被测子进程
 自己执行时（如 `tools/starter` 的升级测试跑 `migrate up`），用 `pgtest.EmptyDSN(t)` 取一个空库的
 连接串。不要在测试里另起容器。集成测试文件都带 `//go:build integration`。

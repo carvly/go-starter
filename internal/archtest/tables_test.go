@@ -140,20 +140,15 @@ func parseMigrations(files []migrationFile) (tables map[string]bool, fks []forei
 	return tables, fks
 }
 
-func loadMigrations() ([]migrationFile, error) {
-	var names []string
-	for _, pattern := range []string{
-		filepath.Join(repoRoot(), "internal", "platform", "queue", "migrations", "*.up.sql"),
-		filepath.Join(repoRoot(), "internal", "modules", "*", "migrations", "*.up.sql"),
-	} {
-		matches, err := filepath.Glob(pattern)
-		if err != nil {
-			return nil, err
-		}
-		names = append(names, matches...)
+// loadModuleMigrations 读取模块迁移里文件名匹配 glob 的文件（如 "*.up.sql"）。river 的表由 rivermigrate 执行，
+// 没有 SQL 文件，不在检查范围内。
+func loadModuleMigrations(glob string) ([]migrationFile, error) {
+	names, err := filepath.Glob(filepath.Join(repoRoot(), "internal", "modules", "*", "migrations", glob))
+	if err != nil {
+		return nil, err
 	}
 	slices.Sort(names)
-	var files []migrationFile
+	files := make([]migrationFile, 0, len(names))
 	for _, name := range names {
 		b, err := os.ReadFile(name)
 		if err != nil {
@@ -385,7 +380,7 @@ type tableFacts struct {
 
 // loadTableFacts 只解析一次迁移和登记，三个检查共用。
 var loadTableFacts = sync.OnceValues(func() (*tableFacts, error) {
-	migrations, err := loadMigrations()
+	migrations, err := loadModuleMigrations("*.up.sql")
 	if err != nil {
 		return nil, err
 	}
