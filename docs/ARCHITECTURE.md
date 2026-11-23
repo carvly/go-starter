@@ -187,7 +187,11 @@ testcontainers-go。显式构造函数注入，不用 wire/fx。
 - 接口 spec-first（oapi-codegen）：spec 是唯一真相源，路由和 spec 的一致性由测试检查，不从代码注释生成
   spec；
 - 配置以环境变量为主，`CONFIG_FILE` 可选 YAML 覆盖非敏感默认值，不用 Viper：不需要多格式、远程配置中心；
-- 显式构造函数注入，不用 wire/fx：依赖关系靠"跳转到定义"就能追到底。
+- 显式构造函数注入，不用 wire/fx：依赖关系靠"跳转到定义"就能追到底；
+- 裸机发布用 systemd socket activation：两个 api 实例轮流继承 systemd 持有的同一个监听 socket，切换对网关透明，
+  只用 systemd 219 的功能（见 [`docs/agents/deploy-ci.md`](agents/deploy-ci.md) 的"裸机发布"）。不用两个端口加网关
+  主动健康检查：摘除要等探测间隔、依赖 Lua 健康检查模块，时序不确定；不用 SO_REUSEPORT：关闭时队列里已握手的连接被
+  RST，CentOS 7 的内核不能迁移。
 
 ## 已实现 / 规划中
 
@@ -206,6 +210,7 @@ testcontainers-go。显式构造函数注入，不用 wire/fx。
 | 集成测试（Repository 契约、dbtx、入队） | 已实现，需要 Docker |
 | 日志、Prometheus 指标、OpenTelemetry tracing（trace_id 贯穿网关、日志、trace，HTTP/SQL/Redis/微信/river 插桩）、健康检查 | 已实现；连接池、队列积压指标未接入 |
 | Docker 镜像、compose、CI、提交钩子、dependabot | 已实现；镜像漏洞扫描（trivy）未接入 |
+| 发布不丢请求：HTTP 排空期、裸机 socket activation 双实例轮换（`deploy/baremetal/`） | 已实现；容器部署的生产滚动发布未实现 |
 | 手写 outbox | 不实现，river 已覆盖（见"技术选型"） |
 | 外部消息队列 relay、跨服务 HTTP 调用封装、熔断 | 不预先实现，出现真实需求时再加 |
 

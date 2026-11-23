@@ -238,6 +238,7 @@ Alloy 的 `host.alloy`）。每个项目：`render.sh` 生成并按它打印的�
 进程各自按内存计数限流）；数据库连接数按两个 api 实例 + worker 计算（交接期间短暂并存，一般十余秒）；Alloy 的运行用户加入
 `systemd-journal` 组。
 SELinux enforcing 的机器上未验证：若 OpenResty 以 `httpd_t` 受限运行，需要 `setsebool -P httpd_can_network_connect 1`。
+Alloy 在 CentOS 7 上读 systemd 219 的 journald 未验证，部署前单独确认；不行就改用 rsyslog 或 filebeat 采集日志。
 
 ## 版本固定
 

@@ -224,7 +224,9 @@ http_server_request_duration_seconds{server, method, route, status}
   指标只走 Prometheus；
 - Collector 的尾部采样：出错的全保留、慢的全保留、其余按比例。一条 trace 只出自一个进程，每台机器本机的 Alloy 就能看全，
   不需要按 trace_id 负载均衡；示例见 `deploy/baremetal/alloy/host.alloy`（全机一份），各项目的抓取和日志读取在
-  `deploy/baremetal/alloy/project.alloy` 渲染出的片段里，打 `project` 标签区分同机的多个项目（`service_name` 固定是 api/worker）。
+  `deploy/baremetal/alloy/project.alloy` 渲染出的片段里，打 `project` 标签区分同机的多个项目（`service_name` 固定是 api/worker）；
+- 端到端链路（真实的 Collector 尾部采样、Tempo 存储、Grafana 从日志跳到 trace）还没有在目标环境验证过，测试只覆盖到
+  交给 exporter 之前。
 
 ## 健康检查
 
