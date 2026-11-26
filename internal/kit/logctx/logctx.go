@@ -25,6 +25,11 @@ const (
 	keyAttempt = "attempt"
 	// 任务的 trace_id 是本次执行的；入队那次请求的 trace_id 经 span link 关联，记在这里。
 	keyLinkTraceID = "link_trace_id"
+	// 客户端自报的端、宿主系统、版本和安装 ID（X-Client-*、X-Installation-Id 请求头）。
+	keyClientPlatform = "client_platform"
+	keyClientOS       = "client_os"
+	keyClientVersion  = "client_version"
+	keyInstallationID = "installation_id"
 )
 
 type loggerKey struct{}
@@ -113,4 +118,20 @@ func WithJob(ctx context.Context, kind string, id int64, attempt int) context.Co
 // 只有这个字段能把任务和发起它的请求连起来。
 func WithLinkTraceID(ctx context.Context, id string) context.Context {
 	return With(ctx, slog.String(keyLinkTraceID, id))
+}
+
+// WithClient 记录客户端自报的端、宿主系统、版本和安装 ID，只用于排查和统计。空值不写。
+func WithClient(ctx context.Context, platform, os, version, installationID string) context.Context {
+	var attrs []slog.Attr
+	for _, f := range []struct{ key, value string }{
+		{keyClientPlatform, platform},
+		{keyClientOS, os},
+		{keyClientVersion, version},
+		{keyInstallationID, installationID},
+	} {
+		if f.value != "" {
+			attrs = append(attrs, slog.String(f.key, f.value))
+		}
+	}
+	return With(ctx, attrs...)
 }

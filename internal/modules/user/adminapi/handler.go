@@ -122,14 +122,17 @@ func (h *Handler) ListUserSessions(c *echo.Context, id oapi.ID) error {
 	resp := oapi.UserSessionList{Items: make([]oapi.UserSession, 0, len(sessions))}
 	for _, v := range sessions {
 		resp.Items = append(resp.Items, oapi.UserSession{
-			Id:         v.ID,
-			Client:     oapi.UserSessionClient(v.Client),
-			DeviceName: v.DeviceName,
-			Ip:         v.IP,
-			UserAgent:  v.UserAgent,
-			CreatedAt:  v.CreatedAt,
-			LastUsedAt: v.LastUsedAt,
-			ExpiresAt:  v.ExpiresAt,
+			Id:            v.ID,
+			Client:        oapi.UserSessionClient(v.Client),
+			ClientVersion: optional(v.ClientVersion),
+			ClientOs:      optional(v.ClientOS),
+			DeviceClass:   optional(oapi.UserSessionDeviceClass(v.DeviceClass)),
+			DeviceName:    v.DeviceName,
+			Ip:            v.IP,
+			UserAgent:     v.UserAgent,
+			CreatedAt:     v.CreatedAt,
+			LastUsedAt:    v.LastUsedAt,
+			ExpiresAt:     v.ExpiresAt,
 		})
 	}
 	return c.JSON(http.StatusOK, resp)
@@ -142,6 +145,14 @@ func (h *Handler) KickUserSession(c *echo.Context, id oapi.ID, sid oapi.ID) erro
 		return err
 	}
 	return c.NoContent(http.StatusNoContent)
+}
+
+// optional 把空值转成不返回的字段。
+func optional[T ~string](v T) *T {
+	if v == "" {
+		return nil
+	}
+	return &v
 }
 
 var _ oapi.ServerInterface = (*Handler)(nil)

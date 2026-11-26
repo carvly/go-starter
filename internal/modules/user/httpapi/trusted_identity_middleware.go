@@ -1,11 +1,11 @@
 package httpapi
 
 import (
-	"net/http"
 	"strings"
 
 	"github.com/labstack/echo/v5"
 
+	"app.local/internal/modules/user/domain"
 	"app.local/internal/platform/httpserver"
 )
 
@@ -33,7 +33,7 @@ func NewTrustedIdentityMiddleware(headerName string) echo.MiddlewareFunc {
 			// 空白身份不能被当成合法用户放行。
 			userID := strings.TrimSpace(c.Request().Header.Get(headerName))
 			if userID == "" {
-				return echo.NewHTTPError(http.StatusUnauthorized, "missing "+headerName+" header")
+				return domain.ErrInvalidToken
 			}
 			httpserver.SetUserSession(c, httpserver.UserSession{UserID: userID})
 			return next(c)

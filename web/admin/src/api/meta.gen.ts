@@ -17,8 +17,13 @@ export const identityProviderMeta = {
 } as const;
 
 export const userSessionClientMeta = {
-  values: ["web", "app", "miniprogram"],
-  labels: { web: "网页", app: "App", miniprogram: "小程序" },
+  values: ["web", "android", "ios", "harmonyos", "wechat-miniprogram"],
+  labels: { web: "网页", android: "Android App", ios: "iOS App", harmonyos: "鸿蒙 App", "wechat-miniprogram": "微信小程序" },
+} as const;
+
+export const userSessionDeviceClassMeta = {
+  values: ["phone", "tablet"],
+  labels: { phone: "手机", tablet: "平板" },
 } as const;
 
 export const errorMeta = {
@@ -287,6 +292,9 @@ export const userSessionMeta = {
   fields: {
     id: { title: "ID" },
     client: { title: "客户端", labels: userSessionClientMeta.labels },
+    client_version: { title: "客户端版本" },
+    client_os: { title: "宿主系统" },
+    device_class: { title: "设备形态", labels: userSessionDeviceClassMeta.labels },
     device_name: { title: "设备名" },
     ip: { title: "登录 IP" },
     user_agent: { title: "User-Agent" },

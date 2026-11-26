@@ -16,49 +16,46 @@ import (
 
 // Defines values for IdentityProvider.
 const (
-	Apple  IdentityProvider = "apple"
-	Email  IdentityProvider = "email"
-	Github IdentityProvider = "github"
-	Google IdentityProvider = "google"
-	Phone  IdentityProvider = "phone"
-	Wechat IdentityProvider = "wechat"
+	IdentityProviderApple  IdentityProvider = "apple"
+	IdentityProviderEmail  IdentityProvider = "email"
+	IdentityProviderGithub IdentityProvider = "github"
+	IdentityProviderGoogle IdentityProvider = "google"
+	IdentityProviderPhone  IdentityProvider = "phone"
+	IdentityProviderWechat IdentityProvider = "wechat"
 )
 
 // Valid indicates whether the value is a known member of the IdentityProvider enum.
 func (e IdentityProvider) Valid() bool {
 	switch e {
-	case Apple:
+	case IdentityProviderApple:
 		return true
-	case Email:
+	case IdentityProviderEmail:
 		return true
-	case Github:
+	case IdentityProviderGithub:
 		return true
-	case Google:
+	case IdentityProviderGoogle:
 		return true
-	case Phone:
+	case IdentityProviderPhone:
 		return true
-	case Wechat:
+	case IdentityProviderWechat:
 		return true
 	default:
 		return false
 	}
 }
 
-// Defines values for NativeLoginRequestClient.
+// Defines values for NativeLoginRequestDeviceClass.
 const (
-	NativeLoginRequestClientApp         NativeLoginRequestClient = "app"
-	NativeLoginRequestClientMiniprogram NativeLoginRequestClient = "miniprogram"
-	NativeLoginRequestClientWeb         NativeLoginRequestClient = "web"
+	NativeLoginRequestDeviceClassPhone  NativeLoginRequestDeviceClass = "phone"
+	NativeLoginRequestDeviceClassTablet NativeLoginRequestDeviceClass = "tablet"
 )
 
-// Valid indicates whether the value is a known member of the NativeLoginRequestClient enum.
-func (e NativeLoginRequestClient) Valid() bool {
+// Valid indicates whether the value is a known member of the NativeLoginRequestDeviceClass enum.
+func (e NativeLoginRequestDeviceClass) Valid() bool {
 	switch e {
-	case NativeLoginRequestClientApp:
+	case NativeLoginRequestDeviceClassPhone:
 		return true
-	case NativeLoginRequestClientMiniprogram:
-		return true
-	case NativeLoginRequestClientWeb:
+	case NativeLoginRequestDeviceClassTablet:
 		return true
 	default:
 		return false
@@ -67,19 +64,43 @@ func (e NativeLoginRequestClient) Valid() bool {
 
 // Defines values for SessionClient.
 const (
-	SessionClientApp         SessionClient = "app"
-	SessionClientMiniprogram SessionClient = "miniprogram"
-	SessionClientWeb         SessionClient = "web"
+	SessionClientAndroid           SessionClient = "android"
+	SessionClientHarmonyos         SessionClient = "harmonyos"
+	SessionClientIos               SessionClient = "ios"
+	SessionClientWeb               SessionClient = "web"
+	SessionClientWechatMiniprogram SessionClient = "wechat-miniprogram"
 )
 
 // Valid indicates whether the value is a known member of the SessionClient enum.
 func (e SessionClient) Valid() bool {
 	switch e {
-	case SessionClientApp:
+	case SessionClientAndroid:
 		return true
-	case SessionClientMiniprogram:
+	case SessionClientHarmonyos:
+		return true
+	case SessionClientIos:
 		return true
 	case SessionClientWeb:
+		return true
+	case SessionClientWechatMiniprogram:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SessionDeviceClass.
+const (
+	SessionDeviceClassPhone  SessionDeviceClass = "phone"
+	SessionDeviceClassTablet SessionDeviceClass = "tablet"
+)
+
+// Valid indicates whether the value is a known member of the SessionDeviceClass enum.
+func (e SessionDeviceClass) Valid() bool {
+	switch e {
+	case SessionDeviceClassPhone:
+		return true
+	case SessionDeviceClassTablet:
 		return true
 	default:
 		return false
@@ -215,8 +236,8 @@ func (e ReauthenticateOAuthParamsProvider) Valid() bool {
 // Error defines model for Error.
 type Error struct {
 	// Code 机器可读的错误码，比如 product_not_found、insufficient_stock、invalid_cursor。
-	// 业务错误的取值由各模块 domain/errors.go 里的 errs.New 定义，这里不逐条
-	// 枚举，避免 spec 和代码出现第二个需要同步的地方。另有两个通用取值：
+	// 业务错误的取值由各模块 domain/errors.go（检查请求本身的由接入包的 errors.go）
+	// 里的 errs.New 定义，这里不逐条枚举，避免 spec 和代码出现第二个需要同步的地方。另有两个通用取值：
 	// invalid_request（请求字段校验失败，message 列出 JSON 字段和规则）、
 	// http_error（请求格式错误、路径参数格式不对、请求体过大等框架层错误）。
 	//
@@ -295,13 +316,15 @@ type NativeBindRequest struct {
 
 // NativeLoginRequest defines model for NativeLoginRequest.
 type NativeLoginRequest struct {
-	// Client Examples: miniprogram
-	Client NativeLoginRequestClient `json:"client" validate:"required,oneof=web app miniprogram"`
-
 	// Code 授权码（微信 wx.login / SDK 授权返回的 code）。需要哪些凭证字段由 provider 决定，微信只需 code。
 	//
 	// Examples: 071xyz
 	Code *string `json:"code,omitempty" validate:"omitempty,min=1"`
+
+	// DeviceClass 设备形态，App 入口必填（iOS 按 userInterfaceIdiom，Android 按屏幕最短边 ≥ 600dp 为 tablet）；其它入口不使用，但取值仍须合法。
+	//
+	// Examples: phone
+	DeviceClass *NativeLoginRequestDeviceClass `json:"device_class,omitempty" validate:"omitempty,oneof=phone tablet"`
 
 	// DeviceName Examples: iPhone 16
 	DeviceName *string `json:"device_name,omitempty" validate:"omitempty,max=128"`
@@ -322,8 +345,10 @@ type NativeLoginRequest struct {
 	Nonce *string `json:"nonce,omitempty" validate:"omitempty,min=1,max=128"`
 }
 
-// NativeLoginRequestClient Examples: miniprogram
-type NativeLoginRequestClient string
+// NativeLoginRequestDeviceClass 设备形态，App 入口必填（iOS 按 userInterfaceIdiom，Android 按屏幕最短边 ≥ 600dp 为 tablet）；其它入口不使用，但取值仍须合法。
+//
+// Examples: phone
+type NativeLoginRequestDeviceClass string
 
 // NativeNonceResponse defines model for NativeNonceResponse.
 type NativeNonceResponse struct {
@@ -359,6 +384,16 @@ type Session struct {
 	// Client Examples: web
 	Client SessionClient `json:"client"`
 
+	// ClientOs 登录时小程序宿主所在的系统；没有上报时不返回。
+	//
+	// Examples: ios
+	ClientOs *string `json:"client_os,omitempty"`
+
+	// ClientVersion 登录时的客户端版本；客户端没有上报时不返回。
+	//
+	// Examples: 1.4.2+1042
+	ClientVersion *string `json:"client_version,omitempty"`
+
 	// CreatedAt Examples: 2026-11-06T08:00:00Z
 	CreatedAt time.Time `json:"created_at"`
 
@@ -366,6 +401,11 @@ type Session struct {
 	//
 	// Examples: true
 	Current bool `json:"current"`
+
+	// DeviceClass App 登录时上报的设备形态；其它客户端不返回。
+	//
+	// Examples: phone
+	DeviceClass *SessionDeviceClass `json:"device_class,omitempty"`
 
 	// DeviceName Examples: iPhone 16
 	DeviceName string `json:"device_name"`
@@ -388,6 +428,11 @@ type Session struct {
 
 // SessionClient Examples: web
 type SessionClient string
+
+// SessionDeviceClass App 登录时上报的设备形态；其它客户端不返回。
+//
+// Examples: phone
+type SessionDeviceClass string
 
 // SessionList defines model for SessionList.
 type SessionList struct {
@@ -468,6 +513,15 @@ type ID = openapi_types.UUID
 // Limit defines model for Limit.
 type Limit = int
 
+// XClientOS Examples: ios
+type XClientOS = string
+
+// XClientPlatform Examples: android
+type XClientPlatform = string
+
+// XClientVersion Examples: 1.4.2+1042
+type XClientVersion = string
+
 // BadRequest defines model for BadRequest.
 type BadRequest = Error
 
@@ -483,8 +537,27 @@ type TooManyRequests = Error
 // Unauthorized defines model for Unauthorized.
 type Unauthorized = Error
 
+// NativeLoginParams defines parameters for NativeLogin.
+type NativeLoginParams struct {
+	// XClientPlatform 端：android、ios、harmonyos、web，或 `<生态>-<形态>`（如 wechat-miniprogram），小写字母、数字和连字符，
+	// 最长 32 个字符。原生登录的 App 入口（wechat-app）必须是 android、ios 或 harmonyos。
+	XClientPlatform *XClientPlatform `json:"X-Client-Platform,omitempty"`
+
+	// XClientOS 小程序、小游戏的宿主所在系统（如 ios、android、ohos、devtools），取宿主 API 返回的 platform。
+	XClientOS *XClientOS `json:"X-Client-OS,omitempty"`
+
+	// XClientVersion 客户端版本，App、小程序用 semver（可带 +构建号），Web 用构建的 commit 短 hash；最长 32 个字符。
+	XClientVersion *XClientVersion `json:"X-Client-Version,omitempty"`
+}
+
 // NativeLoginParamsProvider defines parameters for NativeLogin.
 type NativeLoginParamsProvider string
+
+// ExchangeOAuthParams defines parameters for ExchangeOAuth.
+type ExchangeOAuthParams struct {
+	// XClientVersion 客户端版本，App、小程序用 semver（可带 +构建号），Web 用构建的 commit 短 hash；最长 32 个字符。
+	XClientVersion *XClientVersion `json:"X-Client-Version,omitempty"`
+}
 
 // AuthorizeOAuthParams defines parameters for AuthorizeOAuth.
 type AuthorizeOAuthParams struct {
@@ -641,13 +714,13 @@ func (a OAuthCallbackForm) MarshalJSON() ([]byte, error) {
 type ServerInterface interface {
 	// NativeLogin 原生 SDK 登录（小程序 wx.login / App SDK 授权）
 	// (POST /auth/native/{provider}/login)
-	NativeLogin(ctx *echo.Context, provider NativeLoginParamsProvider) error
+	NativeLogin(ctx *echo.Context, provider NativeLoginParamsProvider, params NativeLoginParams) error
 	// IssueNativeNonce 签发原生登录用的一次性 nonce
 	// (POST /auth/native/{provider}/nonce)
 	IssueNativeNonce(ctx *echo.Context, provider string) error
 	// ExchangeOAuth 兑换浏览器登录结果
 	// (POST /auth/oauth/exchange)
-	ExchangeOAuth(ctx *echo.Context) error
+	ExchangeOAuth(ctx *echo.Context, params ExchangeOAuthParams) error
 	// AuthorizeOAuth 发起浏览器授权（整页跳转到第三方授权页）
 	// (GET /auth/oauth/{provider}/authorize)
 	AuthorizeOAuth(ctx *echo.Context, provider AuthorizeOAuthParamsProvider, params AuthorizeOAuthParams) error
@@ -711,8 +784,58 @@ func (w *ServerInterfaceWrapper) NativeLogin(ctx *echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("Invalid format for parameter provider: %s", err))
 	}
 
+	// Parameter object where we will unmarshal all parameters from the context
+	var params NativeLoginParams
+
+	headers := ctx.Request().Header
+	// ------------- Optional header parameter "X-Client-Platform" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Client-Platform")]; found {
+		var XClientPlatform XClientPlatform
+		n := len(valueList)
+		if n != 1 {
+			return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("Expected one value for X-Client-Platform, got %d", n))
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Client-Platform", valueList[0], &XClientPlatform, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("Invalid format for parameter X-Client-Platform: %s", err))
+		}
+
+		params.XClientPlatform = &XClientPlatform
+	}
+	// ------------- Optional header parameter "X-Client-OS" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Client-OS")]; found {
+		var XClientOS XClientOS
+		n := len(valueList)
+		if n != 1 {
+			return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("Expected one value for X-Client-OS, got %d", n))
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Client-OS", valueList[0], &XClientOS, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("Invalid format for parameter X-Client-OS: %s", err))
+		}
+
+		params.XClientOS = &XClientOS
+	}
+	// ------------- Optional header parameter "X-Client-Version" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Client-Version")]; found {
+		var XClientVersion XClientVersion
+		n := len(valueList)
+		if n != 1 {
+			return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("Expected one value for X-Client-Version, got %d", n))
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Client-Version", valueList[0], &XClientVersion, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("Invalid format for parameter X-Client-Version: %s", err))
+		}
+
+		params.XClientVersion = &XClientVersion
+	}
+
 	// Invoke the callback with all the unmarshaled arguments
-	err = w.Handler.NativeLogin(ctx, provider)
+	err = w.Handler.NativeLogin(ctx, provider, params)
 	return err
 }
 
@@ -736,8 +859,28 @@ func (w *ServerInterfaceWrapper) IssueNativeNonce(ctx *echo.Context) error {
 func (w *ServerInterfaceWrapper) ExchangeOAuth(ctx *echo.Context) error {
 	var err error
 
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ExchangeOAuthParams
+
+	headers := ctx.Request().Header
+	// ------------- Optional header parameter "X-Client-Version" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Client-Version")]; found {
+		var XClientVersion XClientVersion
+		n := len(valueList)
+		if n != 1 {
+			return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("Expected one value for X-Client-Version, got %d", n))
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Client-Version", valueList[0], &XClientVersion, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("Invalid format for parameter X-Client-Version: %s", err))
+		}
+
+		params.XClientVersion = &XClientVersion
+	}
+
 	// Invoke the callback with all the unmarshaled arguments
-	err = w.Handler.ExchangeOAuth(ctx)
+	err = w.Handler.ExchangeOAuth(ctx, params)
 	return err
 }
 

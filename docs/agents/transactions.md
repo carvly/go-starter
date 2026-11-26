@@ -30,8 +30,9 @@
 - `internal/modules/user/domain/account.go` 的 `DeleteMe`：注销写操作和事件入队同事务；
 - `internal/modules/staff/domain/service.go` 的 `Disable`：在锁里检查至少留下一个超级管理员、
   改状态、吊销会话同事务；
-- 一条语句就能写完的不需要开事务：`internal/modules/user/postgres/repository.go` 的 `Disable`
-  用数据修改的 CTE 在同一条语句里改用户状态并吊销会话；
+- `internal/modules/user/domain/account.go` 的 `Disable`：改状态、吊销会话同事务，但必须是两条语句。改状态的
+  UPDATE 会等并发登录释放用户行锁；同一条语句里的数据修改 CTE 用的是语句开始时的快照，看不到那次登录刚提交的
+  会话，会漏吊销。一条语句能写完、又不会等别的事务往相关表里写行时，才用数据修改的 CTE 省掉事务；
 - `internal/modules/staff/domain/service.go` 的 `ResetPassword`：重设密码、启用账号、
   吊销会话和写操作日志同事务。
 

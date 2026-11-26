@@ -2,7 +2,14 @@ import { useSuspenseQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { ArrowLeft } from "lucide-react";
 
-import { identityProviderMeta, userMeta, userSessionClientMeta, userStatusMeta } from "@/api/meta.gen";
+import {
+  identityProviderMeta,
+  userMeta,
+  userSessionClientMeta,
+  userSessionDeviceClassMeta,
+  userSessionMeta,
+  userStatusMeta,
+} from "@/api/meta.gen";
 import { DateTimeCell, EnumCell, TextCell } from "@/components/data-table/cells";
 import { ConfirmButton } from "@/components/confirm-button";
 import { DescriptionItem, DescriptionList } from "@/components/overlay";
@@ -107,7 +114,9 @@ export function UserDetailPage({ id }: { id: string }) {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>客户端</TableHead>
+                <TableHead>{userSessionMeta.fields.client.title}</TableHead>
+                <TableHead>{userSessionMeta.fields.client_version.title}</TableHead>
+                <TableHead>{userSessionMeta.fields.device_class.title}</TableHead>
                 <TableHead>设备名</TableHead>
                 <TableHead>登录 IP</TableHead>
                 <TableHead>登录时间</TableHead>
@@ -120,6 +129,11 @@ export function UserDetailPage({ id }: { id: string }) {
                 <TableRow key={s.id}>
                   <TableCell>
                     <EnumCell value={s.client} labels={userSessionClientMeta.labels} />
+                    {s.client_os && <span className="text-muted-foreground"> · {s.client_os}</span>}
+                  </TableCell>
+                  <TableCell className="font-mono text-xs">{s.client_version || "—"}</TableCell>
+                  <TableCell>
+                    {s.device_class ? <EnumCell value={s.device_class} labels={userSessionDeviceClassMeta.labels} /> : "—"}
                   </TableCell>
                   <TableCell>{s.device_name || "—"}</TableCell>
                   <TableCell className="font-mono text-xs">{s.ip}</TableCell>
@@ -144,7 +158,7 @@ export function UserDetailPage({ id }: { id: string }) {
               ))}
               {sessions.items.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={6} className="text-muted-foreground">
+                  <TableCell colSpan={8} className="text-muted-foreground">
                     没有活跃会话
                   </TableCell>
                 </TableRow>

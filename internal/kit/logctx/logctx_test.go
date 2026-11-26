@@ -72,3 +72,14 @@ func TestWithUserIDAndStaffID_AreCorrelationFields(t *testing.T) {
 		t.Errorf("Attrs = %v", logctx.Attrs(ctx))
 	}
 }
+
+func TestWithClient_SkipsEmptyValues(t *testing.T) {
+	ctx := logctx.WithClient(t.Context(), "android", "", "1.4.2+1042", "")
+	got := attrMap(ctx)
+	if len(got) != 2 || got["client_platform"] != "android" || got["client_version"] != "1.4.2+1042" {
+		t.Errorf("Attrs = %v, want 只有 client_platform 和 client_version", logctx.Attrs(ctx))
+	}
+	if attrs := logctx.Attrs(logctx.WithClient(t.Context(), "", "", "", "")); len(attrs) != 0 {
+		t.Errorf("全空时 Attrs = %v, want 空", attrs)
+	}
+}

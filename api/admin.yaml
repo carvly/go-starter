@@ -881,7 +881,7 @@ components:
           title: 错误码
           examples: ["permission_denied"]
           type: string
-          description: 机器可读的错误码，取值由各模块 domain/errors.go 定义。
+          description: 机器可读的错误码，取值由各模块 domain/errors.go（检查请求本身的由接入包的 errors.go）定义。
         message:
           title: 错误信息
           examples: ["permission denied"]
@@ -1455,12 +1455,22 @@ components:
 
     UserSessionClient:
       type: string
-      enum: [web, app, miniprogram]
+      enum: [web, android, ios, harmonyos, wechat-miniprogram]
       x-enum-labels:
         web: "网页"
-        app: "App"
-        miniprogram: "小程序"
+        android: "Android App"
+        ios: "iOS App"
+        harmonyos: "鸿蒙 App"
+        wechat-miniprogram: "微信小程序"
       description: "客户端类型"
+
+    UserSessionDeviceClass:
+      type: string
+      enum: [phone, tablet]
+      x-enum-labels:
+        phone: "手机"
+        tablet: "平板"
+      description: "设备形态（只有 App 登录有）"
 
     UserSession:
       type: object
@@ -1474,6 +1484,17 @@ components:
         client:
           title: "客户端"
           $ref: "#/components/schemas/UserSessionClient"
+        client_version:
+          title: "客户端版本"
+          type: string
+          description: "客户端没有上报时不返回"
+        client_os:
+          title: "宿主系统"
+          type: string
+          description: "小程序宿主所在的系统；没有上报时不返回"
+        device_class:
+          title: "设备形态"
+          $ref: "#/components/schemas/UserSessionDeviceClass"
         device_name:
           title: "设备名"
           type: string

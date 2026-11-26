@@ -12,7 +12,10 @@ var (
 	ErrAccountUnavailable = errs.New(errs.KindForbidden, "account_unavailable", "账号已被停用，请联系客服")
 	ErrLoginFailed        = errs.New(errs.KindUnauthorized, "login_failed", "登录失败，请重试")
 	ErrInvalidToken       = errs.New(errs.KindUnauthorized, "invalid_token", "登录状态已失效，请重新登录")
-	ErrReauthRequired     = errs.New(errs.KindForbidden, "recent_auth_required", "该操作需要最近验证过身份，请重新验证后再试")
+	// ErrSessionReplaced：会话被同一类设备上的新登录顶掉。客户端提示后由用户确认再登录，不能自动重新登录，
+	// 否则两台设备会互相顶下线。
+	ErrSessionReplaced = errs.New(errs.KindUnauthorized, "session_replaced", "账号已在其它设备登录，请重新登录")
+	ErrReauthRequired  = errs.New(errs.KindForbidden, "recent_auth_required", "该操作需要最近验证过身份，请重新验证后再试")
 	// ErrSessionUnavailable：网关信任 header 模式下没有服务端会话，依赖会话的操作（† 操作、绑定、重新验证）
 	// 不可用。和 ErrReauthRequired 区分开：客户端重新验证也不会成功，不能让它反复重试。
 	ErrSessionUnavailable = errs.New(errs.KindForbidden, "session_unavailable", "当前部署方式不支持这个操作")

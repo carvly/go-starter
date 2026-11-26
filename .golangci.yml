@@ -53,6 +53,10 @@ linters:
         - service_name
         - service_version
         - service_instance_id
+        - client_platform
+        - client_os
+        - client_version
+        - installation_id
 
   exclusions:
     rules:

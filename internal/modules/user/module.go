@@ -61,6 +61,7 @@ func New(d Deps) *Module {
 			RefreshGracePeriod: d.Config.RefreshGracePeriod,
 			ReauthWindow:       d.Config.ReauthWindow,
 		},
+		SessionPolicy: configuredSessionPolicy(d.Config),
 	})
 	return &Module{
 		Service: svc,
@@ -92,6 +93,7 @@ func (m *Module) RegisterHTTP(g *echo.Group) {
 	httpapi.Register(g, httpapi.NewHandler(httpapi.Deps{
 		Service:               m.Service,
 		OAuth:                 m.oauth,
+		NativeClients:         nativeClients,
 		PublicBaseURL:         m.cfg.PublicBaseURL,
 		CookieDeliveryOrigins: m.cfg.CookieDeliveryOrigin,
 	}), httpapi.Middlewares{

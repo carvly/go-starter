@@ -56,6 +56,9 @@ func healthEndpointSkipper(c *echo.Context) bool {
 	}
 }
 
+// corsPreflightMaxAge 是浏览器缓存预检结果的秒数。改了 CORS 白名单后，最多要等这么久才在已打开的页面上生效。
+const corsPreflightMaxAge = 600
+
 // New 按固定顺序注册中间件：请求入口（span、trace_id、日志字段）→ 指标 → Recover → BodyLimit → CORS →
 // Secure → 全局限流 → Timeout；鉴权是操作级中间件，由各模块挂载。
 func New(deps Deps) (*echo.Echo, error) {
@@ -63,9 +66,14 @@ func New(deps Deps) (*echo.Echo, error) {
 	corsMw, err := (middleware.CORSConfig{
 		Skipper:      healthEndpointSkipper,
 		AllowOrigins: deps.CORS.AllowOrigins,
-		AllowHeaders: []string{echo.HeaderAuthorization, echo.HeaderContentType},
+		AllowHeaders: []string{
+			echo.HeaderAuthorization, echo.HeaderContentType,
+			HeaderClientPlatform, HeaderClientOS, HeaderClientVersion, HeaderInstallationID,
+		},
 		// 跨域的前端要读到 X-Trace-Id，出错时才能展示给用户、报给客服。
 		ExposeHeaders: []string{HeaderTraceID},
+		// 客户端每个请求都带 X-Client-* 自定义头，跨域时都要预检；不设时浏览器只缓存预检结果约 5 秒。
+		MaxAge: corsPreflightMaxAge,
 		// refresh token 按 Origin 交付名单经 cookie 交付（SameSite=Strict），
 		// 跨域请求必须允许携带凭据；AllowOrigins 保持精确匹配，不用 "*"。
 		AllowCredentials: true,

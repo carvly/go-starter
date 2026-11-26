@@ -17,6 +17,7 @@ type Service struct {
 	uow        uow.UnitOfWork
 	logger     *slog.Logger
 	cfg        Config
+	policy     SessionPolicy
 }
 
 func NewService(d Deps) *Service {
@@ -31,7 +32,20 @@ func NewService(d Deps) *Service {
 		uow:        d.UoW,
 		logger:     d.Logger,
 		cfg:        d.Config,
+		policy:     d.SessionPolicy,
 	}
+}
+
+// SetSessionPolicy 在启动时登记会话策略。只能有一个：已经有策略（配置启用了内置策略，或重复登记）时 panic，
+// 多个策略的先后没有自然定义，需要组合的在一个实现里组合。
+func (s *Service) SetSessionPolicy(p SessionPolicy) {
+	if p == nil {
+		panic("user: SetSessionPolicy: policy is nil")
+	}
+	if s.policy != nil {
+		panic("user: SetSessionPolicy: a session policy is already set (USER_SESSION_SLOT_LIMIT or an earlier SetSessionPolicy)")
+	}
+	s.policy = p
 }
 
 func (s *Service) log() *slog.Logger {

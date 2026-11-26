@@ -19,6 +19,7 @@ import (
 type Handler struct {
 	service       *domain.Service
 	oauth         oauth.Registry
+	nativeClients map[string]string
 	publicBaseURL string
 	cookieOrigins map[string]bool
 }
@@ -26,7 +27,10 @@ type Handler struct {
 type Deps struct {
 	Service *domain.Service
 	// OAuth 是路由 provider 到实现的注册表（module.go 用微信配置构造）。
-	OAuth                 oauth.Registry
+	OAuth oauth.Registry
+	// NativeClients 登记每个原生入口建立的会话属于哪个客户端：小程序、小游戏由入口（AppID）决定，值就是客户端；
+	// 值为空表示 App 入口（同一个移动应用的多个系统共用），客户端取请求头 X-Client-Platform。
+	NativeClients         map[string]string
 	PublicBaseURL         string
 	CookieDeliveryOrigins []string
 }
@@ -36,7 +40,7 @@ func NewHandler(d Deps) *Handler {
 	for _, o := range d.CookieDeliveryOrigins {
 		origins[o] = true
 	}
-	return &Handler{service: d.Service, oauth: d.OAuth, publicBaseURL: d.PublicBaseURL, cookieOrigins: origins}
+	return &Handler{service: d.Service, oauth: d.OAuth, nativeClients: d.NativeClients, publicBaseURL: d.PublicBaseURL, cookieOrigins: origins}
 }
 
 // toExternalIdentity 把 oauth.Identity 转换成 domain 的中立类型。
@@ -61,10 +65,6 @@ func hashCookieValue(v string) string {
 // newBindingValue 生成浏览器绑定 cookie 的值（随机串，摘要入库）。
 func newBindingValue() string {
 	return secrand.URL(32)
-}
-
-func errUnknownProvider(provider string) error {
-	return echo.NewHTTPError(http.StatusBadRequest, "unknown provider: "+provider)
 }
 
 func (h *Handler) redirectURI(provider string) string {
@@ -117,7 +117,7 @@ func (h *Handler) IssueNativeNonce(c *echo.Context, provider string) error {
 
 // ExchangeOAuth 是浏览器登录的最后一步：前端用回调带回的一次性兑换码发同站
 // 请求，校验绑定 cookie 后完成登录并交付会话。
-func (h *Handler) ExchangeOAuth(c *echo.Context) error {
+func (h *Handler) ExchangeOAuth(c *echo.Context, params oapi.ExchangeOAuthParams) error {
 	var body oapi.ExchangeRequest
 	if err := c.Bind(&body); err != nil {
 		return err
@@ -141,7 +141,11 @@ func (h *Handler) ExchangeOAuth(c *echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, "invalid exchange code")
 	}
 
-	tokens, err := h.service.Login(ctx, "web", "", c.RealIP(), c.Request().UserAgent(), *st.Identity)
+	// 浏览器流程依赖绑定 cookie，只有浏览器能走完，客户端固定为 web，不看 X-Client-Platform。
+	client := httpserver.ClientInfo{Version: deref(params.XClientVersion)}.Sanitized()
+	tokens, err := h.service.Login(ctx, domain.LoginClient{
+		Client: domain.ClientWeb, ClientVersion: client.Version, IP: c.RealIP(), UserAgent: c.Request().UserAgent(),
+	}, *st.Identity)
 	if err != nil {
 		return err
 	}
@@ -151,8 +155,9 @@ func (h *Handler) ExchangeOAuth(c *echo.Context) error {
 	return h.respondWithTokens(c, tokens)
 }
 
-// NativeLogin 是小程序 wx.login / App SDK 授权后的服务端校验登录。
-func (h *Handler) NativeLogin(c *echo.Context, provider oapi.NativeLoginParamsProvider) error {
+// NativeLogin 是小程序 wx.login / App SDK 授权后的服务端校验登录。客户端信息在校验凭证之前检查：
+// verifyNative 会用掉一次性的授权码和 nonce，先检查才能让客户端修正后直接重试。
+func (h *Handler) NativeLogin(c *echo.Context, provider oapi.NativeLoginParamsProvider, params oapi.NativeLoginParams) error {
 	var body oapi.NativeLoginRequest
 	if err := c.Bind(&body); err != nil {
 		return err
@@ -160,15 +165,47 @@ func (h *Handler) NativeLogin(c *echo.Context, provider oapi.NativeLoginParamsPr
 	if err := c.Validate(&body); err != nil {
 		return err
 	}
+	lc, err := h.nativeLoginClient(c, string(provider), params, body)
+	if err != nil {
+		return err
+	}
 	ext, err := h.verifyNative(c, string(provider), nativeInput{Code: body.Code, IDToken: body.IdToken, Nonce: body.Nonce, Name: body.Name})
 	if err != nil {
 		return err
 	}
-	tokens, err := h.service.Login(c.Request().Context(), string(body.Client), deref(body.DeviceName), c.RealIP(), c.Request().UserAgent(), ext)
+	tokens, err := h.service.Login(c.Request().Context(), lc, ext)
 	if err != nil {
 		return err
 	}
 	return h.respondWithTokens(c, tokens)
+}
+
+// nativeLoginClient 按入口的登记决定会话的客户端：小程序入口取登记的值，App 入口要求 X-Client-Platform 是
+// android、ios、harmonyos，并且请求体带 device_class。其余客户端信息是自报的，格式不对就不记。
+func (h *Handler) nativeLoginClient(c *echo.Context, provider string, params oapi.NativeLoginParams, body oapi.NativeLoginRequest) (domain.LoginClient, error) {
+	fixed, ok := h.nativeClients[provider]
+	if _, enabled := h.oauth.NativeEntry(provider); !ok || !enabled {
+		return domain.LoginClient{}, errUnknownProvider(provider)
+	}
+	info := httpserver.ClientInfo{
+		Platform: deref(params.XClientPlatform), OS: deref(params.XClientOS), Version: deref(params.XClientVersion),
+	}.Sanitized()
+	lc := domain.LoginClient{
+		Client: fixed, ClientVersion: info.Version, DeviceName: deref(body.DeviceName),
+		IP: c.RealIP(), UserAgent: c.Request().UserAgent(),
+	}
+	if fixed != "" {
+		lc.ClientOS = info.OS
+		return lc, nil
+	}
+	if !domain.IsAppClient(info.Platform) {
+		return domain.LoginClient{}, errClientPlatformInvalid
+	}
+	if body.DeviceClass == nil {
+		return domain.LoginClient{}, errDeviceClassInvalid
+	}
+	lc.Client, lc.DeviceClass = info.Platform, string(*body.DeviceClass)
+	return lc, nil
 }
 
 func (h *Handler) refreshTokenFrom(c *echo.Context, bodyToken *string) string {
@@ -420,16 +457,27 @@ func toIdentity(v *domain.Identity) oapi.Identity {
 
 func toSession(v *domain.Session, current bool) oapi.Session {
 	return oapi.Session{
-		Id:         v.ID,
-		Client:     oapi.SessionClient(v.Client),
-		DeviceName: v.DeviceName,
-		Ip:         &v.IP,
-		UserAgent:  &v.UserAgent,
-		CreatedAt:  v.CreatedAt,
-		LastUsedAt: v.LastUsedAt,
-		ExpiresAt:  v.ExpiresAt,
-		Current:    current,
+		Id:            v.ID,
+		Client:        oapi.SessionClient(v.Client),
+		ClientVersion: optional(v.ClientVersion),
+		ClientOs:      optional(v.ClientOS),
+		DeviceClass:   optional(oapi.SessionDeviceClass(v.DeviceClass)),
+		DeviceName:    v.DeviceName,
+		Ip:            &v.IP,
+		UserAgent:     &v.UserAgent,
+		CreatedAt:     v.CreatedAt,
+		LastUsedAt:    v.LastUsedAt,
+		ExpiresAt:     v.ExpiresAt,
+		Current:       current,
 	}
+}
+
+// optional 把空值转成不返回的字段。
+func optional[T ~string](v T) *T {
+	if v == "" {
+		return nil
+	}
+	return &v
 }
 
 var _ oapi.ServerInterface = (*Handler)(nil)

@@ -19,6 +19,12 @@ info:
     Echo v5）。
     /healthz、/readyz 是运维探针，不写进这份 spec。
 
+    客户端请求头（全局约定）：所有请求都带 `X-Client-Platform`（端，如 android、ios、harmonyos、
+    web、wechat-miniprogram）、`X-Client-Version`（版本）；小程序、小游戏另带 `X-Client-OS`（宿主所在
+    系统）；App 和小程序另带 `X-Installation-Id`（安装级随机 UUID，带连字符的 36 位形式，卸载即重置）。它们是
+    客户端自报的，只用于日志和会话展示，取值不合法时被忽略；每个头只发一次（声明了它们的接口遇到重复的头
+    返回 400）；只有原生登录对 App 入口要求 `X-Client-Platform`。每个响应带 `X-Trace-Id`，出错时客户端记下它，反馈问题时提供。
+
 servers:
   - url: /v1
 
@@ -152,6 +158,8 @@ paths:
         服务端校验浏览器绑定 cookie 后完成登录并交付会话。Origin 在
         cookie 交付名单内时 refresh token 只进 httpOnly cookie，响应体不含。
       security: []
+      parameters:
+        - $ref: "#/components/parameters/XClientVersion"
       requestBody:
         required: true
         content:
@@ -205,6 +213,10 @@ paths:
       operationId: nativeLogin
       tags: [user]
       summary: 原生 SDK 登录（小程序 wx.login / App SDK 授权）
+      description: |
+        会话的客户端由登录入口决定：小程序入口固定为 wechat-miniprogram；App 入口（wechat-app）按
+        `X-Client-Platform` 区分 android、ios、harmonyos，并且请求体必须带 `device_class`。两者缺失或不合法时
+        返回 400，此时授权码还没有被使用，客户端修正后可以直接重试。
       security: []
       parameters:
         - name: provider
@@ -213,6 +225,9 @@ paths:
           schema:
             type: string
             enum: [wechat-miniprogram, wechat-app]
+        - $ref: "#/components/parameters/XClientPlatform"
+        - $ref: "#/components/parameters/XClientOS"
+        - $ref: "#/components/parameters/XClientVersion"
       requestBody:
         required: true
         content:
@@ -528,6 +543,32 @@ components:
         minimum: 1
         maximum: 100
         default: 20
+    XClientPlatform:
+      name: X-Client-Platform
+      in: header
+      required: false
+      description: |
+        端：android、ios、harmonyos、web，或 `<生态>-<形态>`（如 wechat-miniprogram），小写字母、数字和连字符，
+        最长 32 个字符。原生登录的 App 入口（wechat-app）必须是 android、ios 或 harmonyos。
+      schema:
+        type: string
+        examples: ["android"]
+    XClientOS:
+      name: X-Client-OS
+      in: header
+      required: false
+      description: 小程序、小游戏的宿主所在系统（如 ios、android、ohos、devtools），取宿主 API 返回的 platform。
+      schema:
+        type: string
+        examples: ["ios"]
+    XClientVersion:
+      name: X-Client-Version
+      in: header
+      required: false
+      description: 客户端版本，App、小程序用 semver（可带 +构建号），Web 用构建的 commit 短 hash；最长 32 个字符。
+      schema:
+        type: string
+        examples: ["1.4.2+1042"]
 
   responses:
     BadRequest:
@@ -537,7 +578,10 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
     Unauthorized:
-      description: "未提供有效的 Authorization: Bearer token"
+      description: |
+        未提供有效的 Authorization: Bearer token，或会话已失效。code 为 `invalid_token` 时重新登录；为
+        `session_replaced` 时会话已被同一类设备上的新登录顶掉，提示"账号已在其它设备登录"，由用户确认后再登录，
+        不要自动重新登录。
       content:
         application/json:
           schema:
@@ -571,8 +615,8 @@ components:
           type: string
           description: |
             机器可读的错误码，比如 product_not_found、insufficient_stock、invalid_cursor。
-            业务错误的取值由各模块 domain/errors.go 里的 errs.New 定义，这里不逐条
-            枚举，避免 spec 和代码出现第二个需要同步的地方。另有两个通用取值：
+            业务错误的取值由各模块 domain/errors.go（检查请求本身的由接入包的 errors.go）
+            里的 errs.New 定义，这里不逐条枚举，避免 spec 和代码出现第二个需要同步的地方。另有两个通用取值：
             invalid_request（请求字段校验失败，message 列出 JSON 字段和规则）、
             http_error（请求格式错误、路径参数格式不对、请求体过大等框架层错误）。
         message:
@@ -638,7 +682,6 @@ components:
 
     NativeLoginRequest:
       type: object
-      required: [client]
       properties:
         code:
           examples: ["071xyz"]
@@ -670,12 +713,13 @@ components:
           description: 客户端提交的姓名（部分 provider 只在首次授权时给出），只作昵称参考。
           x-oapi-codegen-extra-tags:
             validate: "omitempty,max=128"
-        client:
-          examples: ["miniprogram"]
+        device_class:
+          examples: ["phone"]
           type: string
-          enum: [web, app, miniprogram]
+          enum: [phone, tablet]
+          description: 设备形态，App 入口必填（iOS 按 userInterfaceIdiom，Android 按屏幕最短边 ≥ 600dp 为 tablet）；其它入口不使用，但取值仍须合法。
           x-oapi-codegen-extra-tags:
-            validate: "required,oneof=web app miniprogram"
+            validate: "omitempty,oneof=phone tablet"
         device_name:
           examples: ["iPhone 16"]
           type: string
@@ -830,7 +874,20 @@ components:
         client:
           examples: ["web"]
           type: string
-          enum: [web, app, miniprogram]
+          enum: [web, android, ios, harmonyos, wechat-miniprogram]
+        client_version:
+          examples: ["1.4.2+1042"]
+          type: string
+          description: 登录时的客户端版本；客户端没有上报时不返回。
+        client_os:
+          examples: ["ios"]
+          type: string
+          description: 登录时小程序宿主所在的系统；没有上报时不返回。
+        device_class:
+          examples: ["phone"]
+          type: string
+          enum: [phone, tablet]
+          description: App 登录时上报的设备形态；其它客户端不返回。
         device_name:
           examples: ["iPhone 16"]
           type: string

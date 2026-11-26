@@ -1,6 +1,7 @@
 package domaintest
 
 import (
+	"cmp"
 	"context"
 	"slices"
 	"sync"
@@ -44,6 +45,40 @@ func (f *SessionRepository) GetValid(_ context.Context, sid string) (*domain.Ses
 		return nil, domain.ErrNotFound
 	}
 	return new(*v), nil
+}
+
+func (f *SessionRepository) ListActiveByUser(_ context.Context, userID string) ([]*domain.Session, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	now := time.Now()
+	var out []*domain.Session
+	for _, v := range f.byID {
+		if v.UserID == userID && v.ValidAt(now, f.idleTimeout) {
+			out = append(out, new(*v))
+		}
+	}
+	slices.SortFunc(out, func(a, b *domain.Session) int {
+		return cmp.Or(a.LastUsedAt.Compare(b.LastUsedAt), cmp.Compare(a.ID, b.ID))
+	})
+	return out, nil
+}
+
+func (f *SessionRepository) RevokeReplaced(_ context.Context, userID string, ids []string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	now := time.Now()
+	for _, id := range ids {
+		v, ok := f.byID[id]
+		if !ok || v.UserID != userID || v.RevokedAt != nil {
+			continue
+		}
+		next := *v
+		next.RevokedAt = &now
+		next.Replaced = true
+		next.UpdatedAt = now
+		f.byID[id] = &next
+	}
+	return nil
 }
 
 func (f *SessionRepository) GetByFamily(_ context.Context, family string) (*domain.Session, error) {

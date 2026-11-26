@@ -17,15 +17,16 @@ prometheus.remote_write "default" {
 // 转发到这里。Loki 标签只放低基数：project、service_name、level、syslog_identifier。
 loki.process "logs" {
 	stage.json {
-		expressions = {service_name = "", trace_id = "", span_id = "", link_trace_id = ""}
+		expressions = {service_name = "", trace_id = "", span_id = "", link_trace_id = "", client_platform = "", client_version = ""}
 	}
 
 	stage.labels {
 		values = {service_name = ""}
 	}
-	// ID 不能当标签：放 structured metadata，Grafana 按 trace_id 从日志跳到 Tempo。
+	// ID 不能当标签：放 structured metadata，Grafana 按 trace_id 从日志跳到 Tempo。客户端的端和版本取值多、按需筛选，
+	// 同样放 structured metadata，按"某版本的 Android"查日志不必 | json 全量解析。
 	stage.structured_metadata {
-		values = {trace_id = "", span_id = "", link_trace_id = ""}
+		values = {trace_id = "", span_id = "", link_trace_id = "", client_platform = "", client_version = ""}
 	}
 	forward_to = [loki.write.default.receiver]
 }

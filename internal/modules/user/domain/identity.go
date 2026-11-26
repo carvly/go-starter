@@ -117,9 +117,9 @@ func (s *Service) ResolveBind(ctx context.Context, sess *Session, ext ExternalId
 func (s *Service) BindIdentity(ctx context.Context, sid string, ext ExternalIdentity) (*Identity, error) {
 	var idn *Identity
 	err := s.uow.Run(ctx, func(ctx context.Context) error {
-		sess, err := s.sessions.GetValid(ctx, sid)
+		sess, err := s.validSession(ctx, sid)
 		if err != nil {
-			return fmt.Errorf("bind identity: %w", ErrInvalidToken)
+			return fmt.Errorf("bind identity: %w", err)
 		}
 		idn, err = s.ResolveBind(ctx, sess, ext)
 		return err

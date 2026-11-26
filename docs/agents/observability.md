@@ -50,9 +50,10 @@
 | `method`、`route` | 属于哪个接口；`route` 是路由模板，没匹配上路由时不输出；`method` 的非标准方法归成 `_OTHER`，与指标标签同值 | 请求入口中间件（`internal/platform/httpserver/trace.go`） |
 | `user_id` / `staff_id` | 前台用户 / 后台员工 | `httpserver.SetUserSession` / `SetStaffSession`：两种鉴权都只经它们写入身份。没有登录态、但处理的是某个用户的路径（刷新令牌、注销任务）用 `logctx.WithUserID` 写进 ctx |
 | `job_kind`、`job_id`、`attempt` | 哪个任务、第几次执行；`job_kind` 与 river 自己日志里的键相同 | 队列执行中间件；孤儿任务告警只带 `job_kind` |
+| `client_platform`、`client_os`、`client_version`、`installation_id` | 客户端自报的端、宿主系统、版本和安装 ID，按"某版本的 Android"筛选日志用；格式不合法或没带时不输出，后台请求一般没有。客户端自报、可伪造，只用于排查 | 请求入口中间件（`httpserver.ParseClientInfo`，约定见 [http.md](http.md) 的"客户端请求头"） |
 
 这些字段由入口经 `logctx` 的 `With*` 函数（`WithRoute`、`WithUserID`、`WithStaffID`、`WithJob`、`WithJobKind`、
-`WithLinkTraceID`）写入 ctx（`trace_id`、`span_id` 由根 Handler 从 span 取），**业务代码不手写**。键名常量在 `logctx`、`process` 里都不导出，其它包引用不到；slog 自己的
+`WithLinkTraceID`、`WithClient`）写入 ctx（`trace_id`、`span_id` 由根 Handler 从 span 取），**业务代码不手写**。键名常量在 `logctx`、`process` 里都不导出，其它包引用不到；slog 自己的
 `time`、`level`、`msg`、`source` 同样不能当字段名。手写只能写字面量，sloglint 的 `forbidden-keys` 检查字面量
 （`.golangci.yml`；它不解析别的包的常量，所以键名不能导出），只放行定义和写入它们的 `internal/kit/logctx`、
 `internal/platform/logger`、`internal/platform/process`。来自 ctx 的字段与调用方显式写的同名时根 Handler 不重复输出，
@@ -199,6 +200,8 @@ http_server_request_duration_seconds{server, method, route, status}
   时才接受上游的 `traceparent`（以后拆出的内部服务之间），其次是 `X-Trace-Id`（网关的 `$trace_id`，由 nginx 内置的 `$request_id` 经 `map` 改名，必须是 32 位十六进制
   且非全零，否则忽略），都没有时随机生成。网关给的 ID 经自定义 IDGenerator 直接成为根 span 的 `trace_id`，根 span 没有
   伪造的父 span。直连时一律新生成：客户端不能指定 trace_id，把自己的请求混进别人的日志；
+- 客户端（浏览器、App）带来的 `traceparent` 一律不作为父 span（网关在 `snippets/proxy.conf` 里清掉它）。接入客户端遥测
+  时，服务端仍新开 trace，用 span link 指向客户端的 span（OTel 对不可信入口的建议，和 river 任务关联入队方的做法相同）；
 - 网关因连接错误把请求重试到另一个实例（`proxy_next_upstream`）时，两个实例收到同一个 `$trace_id`，同一条 trace 下
   会有两个根 span、`instance` 不同：这是同一个网关请求的两次尝试，不是执行了两遍。`trace_id` 的含义是"网关请求"，
   网关 access log 只有一行，`upstream` 字段列出两个实例；
@@ -209,14 +212,25 @@ http_server_request_duration_seconds{server, method, route, status}
 
 | 边界 | 做法 |
 |---|---|
-| 入站 HTTP | 请求入口中间件（Echo 的 `Use` 链最外层）。Echo 先匹配路由再执行 `Use` 链，span 名直接是 `"{method} {路由模板}"`，没匹配上路由时只用 method；`/healthz`、`/readyz`、`/metrics` 不建 span（与全局限流同一个 `healthEndpointSkipper`）。5xx 和 panic 标 Error，4xx 不标。被限流（429）和没匹配路由（404）的请求也建 span：日志和 `X-Trace-Id` 要用它的 trace_id，且未标错的 span 会被尾部采样按比例丢弃；洪泛流量由网关限流挡住，不靠应用少建 span |
+| 入站 HTTP | 请求入口中间件（Echo 的 `Use` 链最外层）。Echo 先匹配路由再执行 `Use` 链，span 名直接是 `"{method} {路由模板}"`，没匹配上路由时只用 method；客户端请求头（`X-Client-*`、`X-Installation-Id`）只进日志字段，不写 span 属性（见下文"span 属性的取舍"）；`/healthz`、`/readyz`、`/metrics` 不建 span（与全局限流同一个 `healthEndpointSkipper`）。5xx 和 panic 标 Error，4xx 不标。被限流（429）和没匹配路由（404）的请求也建 span：日志和 `X-Trace-Id` 要用它的 trace_id，且未标错的 span 会被尾部采样按比例丢弃；洪泛流量由网关限流挡住，不靠应用少建 span |
 | PostgreSQL | `otelpgx` 设到连接池的 `Tracer`（`postgres.PoolConfig.Tracer`）：span 名是 SQL 的第一个词，完整语句在属性里，不记参数值 |
 | Redis | `redisotel.InstrumentTracing`（`internal/platform/redis`），不记命令参数（键里有 ID，值可能是业务数据） |
 | 微信等外部 HTTP | 自己建 client span，只记方法、域名、路径、状态码（`internal/platform/oauth/wechat.go`）；非 2xx 和 `errcode`≠0 都标错（微信的业务错误 HTTP 状态恒为 200），provider 取自 ctx 里的 span（`trace.SpanFromContext(ctx).TracerProvider()`）。不用 `otelhttp.NewTransport`：它把完整 URL 记进 `url.full` 且不能配置脱敏，微信的查询参数里有 `appid`、`secret`（长期有效的应用凭据）和用户的 `access_token`。也不向外部服务传播 `traceparent` |
 | river | `otelriver` 排在队列中间件的最外层（`EnableTracePropagation`）：入队时把 `traceparent` 写进任务 metadata，执行时建 work span（名为 `river.work/<kind>`）并以 span link 指向入队的请求。任务执行是一条新的 trace：任务可能几小时后才执行，父子关系会让 trace 横跨很久，尾部采样也等不了 |
 
-- span 名和属性只用由服务端决定、取值有限的值（路由模板、归一化后的方法、状态码、任务类型），不放实体 ID 和客户端可任意
-  取值的内容（原始路径、查询参数、请求头、请求体字段）；
+- span 名只用由服务端决定、取值有限的值（路由模板、归一化后的方法、状态码、任务类型）：span 名用来聚合，取值无限会让
+  按名统计失去意义；
+- span 属性的取舍看敏感性和在哪里检索，不看取值多少：
+  - 不放凭据和可能带凭据的原始内容（原始路径、查询参数、请求头、请求体字段），理由同下表微信那一行；
+  - 不放用来定位某个人、某台设备、某个实体的标识（用户 ID、安装 ID、订单号）：trace 经尾部采样大部分被丢弃，在 trace
+    后端按标识搜索找不全；日志不采样，这些标识写进日志字段，按日志筛选再经 `trace_id` 跳到 trace。敏感标识也因此只存在
+    日志一处；
+  - 采样策略要用的低敏感字段（如客户端的端和版本，用于"新版本灰度期全量保留"）可以进 span 属性，前提是同一个改动里
+    在 `deploy/baremetal/alloy/host.alloy` 的尾部采样加上用它的策略；没有策略用它就不加；
+- OTel 的 `app.*`、`device.*`、`session.*` 语义约定（已从核心约定迁到客户端注册表
+  [semantic-conventions-client-side](https://github.com/open-telemetry/semantic-conventions-client-side)，仍是 development）
+  描述的是客户端自己发出的遥测（客户端进程的资源和 span），不用来在服务端 span 上描述请求方。`session.id` 指客户端的
+  使用会话，不是登录会话（`user_sessions`），登录会话 ID 不用这个名字；
 - 错误的完整信息只写在日志里，span 只标状态，经 `trace_id` 关联；不把业务事件写成 span event。插桩库（otelpgx、redisotel、
   otelriver）会把 `err.Error()` 写进状态描述和 `exception` 事件，`internal/platform/tracing` 的 provider 在交给 exporter
   之前统一去掉（`errorTextRemover`），插桩处不用各自处理；

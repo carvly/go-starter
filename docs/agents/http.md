@@ -60,6 +60,10 @@
 - 业务错误在各模块 `domain/errors.go` 里用 `errs.New(kind, code, message)` 定义
   （`internal/kit/errs`），Kind 决定状态码：Invalid 400、Unauthorized 401、
   Forbidden 403、NotFound 404、Conflict 409、TooManyRequests 429。`errors.Is` 仍按指针相等判断。
+- 检查 HTTP 请求本身（某个请求头、请求体字段缺失或取值不对）、需要稳定错误码让客户端分支处理的错误，定义在接入包
+  （`httpapi/`、`adminapi/`）里，同样用 `errs.New`，文案写明要改的请求头或字段名，放在接入包的 `errors.go`，如
+  `internal/modules/user/httpapi/errors.go`。domain 不知道请求头和字段名，它的错误文案也不提它们；字段约束能写进 spec 的仍用
+  `x-oapi-codegen-extra-tags`（见上文"spec-first 流程"），统一返回 `invalid_request`。
 - 需要等一段时间再试的错误（Kind 为 TooManyRequests）用 `ErrX.WithRetryAfter(d)` 带上剩余
   时间：返回的副本 `errors.Is(副本, ErrX)` 仍成立；错误处理器把剩余秒数（向上取整）写进
   `Retry-After` 响应头和响应体的 `retry_after`，spec 里引用 `TooManyRequests` 响应。
@@ -135,7 +139,8 @@ Timeout（`internal/platform/httpserver/server.go` 的 `newServer`，前台和
 
 - 请求入口（`trace.go` 的 `newRequestMiddleware`）在最外层：建 server span、写响应头 `X-Trace-Id`、在 ctx 里绑定 logger 和
   `method`、`route` 字段，之后的一切（指标的 exemplar、错误日志）都用得到；span 的状态取指标中间件渲染后的实际状态码。
-  trace_id 的来源和信任规则见 [observability.md](observability.md) 的"tracing"；
+  trace_id 的来源和信任规则见 [observability.md](observability.md) 的"tracing"。客户端请求头（见下文"客户端请求头"）也在
+  这里解析，只进日志字段，不进 span 属性；
 - 指标紧接在请求入口之内，再里面是 Recover：指标要看到 Recover 把 panic 转成的错误，才能按 500 计入。**错误在指标中间件里
   渲染**：它把 handler 链返回的错误交给 `HTTPErrorHandler`，然后返回 nil，耗时才包含写出错误响应的时间，状态码取实际写出的。
   所以在它外面的中间件（只有请求入口）看不到错误，只看状态码；需要看错误的中间件挂在它里面；`method` 由它的 `methodName` 归一化，日志字段
@@ -147,8 +152,11 @@ Timeout（`internal/platform/httpserver/server.go` 的 `newServer`，前台和
   goroutine，handler 里的 panic 仍在 Recover 的调用栈上；
 - CORS 必须在限流前面，否则预检请求会被拦。前台 CORS 开了 `AllowCredentials: true`
   （refresh token 按 Origin 经 cookie 交付，见 [user.md](../../internal/modules/user/docs/user.md) 的"会话"），所以 `AllowOrigins`
-  必须显式列出，不能用 `*`；`AllowHeaders` 只放行 `Authorization` 和 `Content-Type`，
-  新增自定义请求头要同时加进这个白名单（`server.go` 的 `New`）；`ExposeHeaders` 放行 `X-Trace-Id`，跨域的前端才能读到它；
+  必须显式列出，不能用 `*`；`AllowHeaders` 只放行 `Authorization`、`Content-Type` 和客户端请求头，
+  新增自定义请求头要同时加进这个白名单（`server.go` 的 `New`）；`ExposeHeaders` 放行 `X-Trace-Id`，跨域的前端才能读到它。
+  客户端每个请求都带自定义头，跨域时连公开的 GET 也要预检，所以预检结果缓存 `corsPreflightMaxAge`（600 秒）：改了白名单后，
+  已打开的页面最多 10 分钟才生效。
+  `Retry-After` 没有放行，跨域的前端读响应体的 `retry_after`；
 - `IPExtractor` 必须按部署拓扑配置（`HTTP_TRUSTED_PROXY`），否则按 IP 的限流可以被
   伪造 header 绕过；
 - 全局限流的计数存储由 `internal/platform/ratelimit` 提供：配置了 Redis 时
@@ -157,6 +165,42 @@ Timeout（`internal/platform/httpserver/server.go` 的 `newServer`，前台和
 - BodyLimit 默认 2MB，Timeout 默认 10 秒。Timeout 只让客户端提前拿到响应，释放服务端
   资源要靠 ctx 一路透传到数据库调用；
 - `/healthz`、`/readyz`、`/metrics` 跳过 CORS、限流和 Timeout。
+
+## 客户端请求头
+
+客户端（Android、iOS、鸿蒙 App，Web，小程序、小游戏）随每个请求自报的信息，`internal/platform/httpserver/client.go`：
+
+| 请求头 | 谁发 | 取值 |
+|---|---|---|
+| `X-Client-Platform` | 所有端 | `android`、`ios`、`harmonyos`、`web`，或 `<生态>-<形态>`：生态按签发 AppID 的开放平台命名（`wechat`、`douyin`、`alipay`……，不按宿主 App），形态是 `miniprogram`、`minigame` |
+| `X-Client-OS` | 小程序、小游戏 | 宿主所在的系统，取宿主 API 返回的 platform（如 `ios`、`android`、`ohos`、`devtools`） |
+| `X-Client-Version` | 所有端 | App、小程序用 semver（可带 `+构建号`），Web 用构建的 commit 短 hash |
+| `X-Installation-Id` | App、小程序 | 安装级随机 UUID：卸载即重置，不随备份恢复，生成与存储见下文。Web 不发 |
+
+- **安装 ID 只标识"这一次安装"**：排查只需要把同一次安装的请求串起来，寿命和范围不超过这个用途（最小化原则；和
+  `user_id` 一起进日志后，它同样是可关联到个人的信息）。由此：
+  - 首次启动生成随机 UUID，存在随应用卸载而清除的位置：Android、鸿蒙用应用私有存储，小程序用本地缓存
+    （`wx.setStorageSync` 等），iOS 用 Application Support 下的文件，不用 Keychain（卸载后仍保留）；
+  - 排除在系统备份之外：否则换机恢复后新旧两台设备共用一个 ID，日志里分不开。Android 在 `dataExtractionRules`
+    （Android 12 以下是 `fullBackupContent`）里排除保存它的文件；iOS 给文件设 `isExcludedFromBackup`，所以不用
+    UserDefaults（它随备份恢复，不能单独排除）；
+  - 不用寿命或范围更大的现成标识：硬件标识（序列号、IMEI、MAC）、广告标识、Android 的 Settings.Secure.ANDROID_ID（卸载后不变）、
+    iOS 的 `identifierForVendor`（同一开发商的 App 共用，全部卸载才重置）；
+- **只用于可观测性和展示**：这些值是客户端自报的，任何人都能伪造，只进日志字段（见 [observability.md](observability.md)
+  的"日志"）和会话展示，**不能用于鉴权、限流豁免、风控放行**，refresh token 的交付方式继续只看 `Origin`；
+- **只检查格式，不检查取值**（`ClientInfo.Sanitized`）：platform、os 是 `[a-z0-9-]{1,32}`，version 是 1–32 个
+  `[0-9A-Za-z._+-]`，安装 ID 是带连字符的 36 位 UUID（大小写都收，统一转成小写）；取值不合法的字段置空，不会因此拒绝请求。
+  唯一的例外是同名头出现多次：在 spec 里把它们声明成参数的操作（原生登录、浏览器兑换），生成的绑定代码返回 400。合法的端
+  有哪些由使用方决定，新的生态不需要改 platform 代码；
+- **业务数据不从 ctx 取**：需要落库的（如会话记录的客户端版本）在 spec 里把请求头声明成操作的参数
+  （`api/openapi.yaml` 的 `components/parameters`），handler 从生成的参数读取后经 `Sanitized` 检查，不经 `context.Value`；
+- 原生登录的 App 入口用 `X-Client-Platform` 区分系统，缺失或不是 `android`、`ios`、`harmonyos` 时返回 400，见
+  [user.md](../../internal/modules/user/docs/user.md) 的"会话记录的客户端"。这个值落库后仍然是自报的，只用于展示；
+- 客户端约定：不发 `traceparent`、`X-Trace-Id`、`X-User-ID`、`X-Forwarded-For`；出错时记下响应头 `X-Trace-Id`，反馈问题
+  时提供；只在 401 时清掉令牌重新登录，5xx 保留令牌按网络错误处理；
+- 安装 ID 和 `user_id` 一起进日志（不进 trace，见 [observability.md](observability.md) 的"tracing"），是可关联到个人的
+  信息：业务项目的隐私政策要披露"为排查问题记录应用安装标识"和日志的保留期；用户注销后数据库里的数据会清理，日志里的
+  记录保留到过期。
 
 ## 超时与耗时长的操作
 

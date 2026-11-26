@@ -13,36 +13,57 @@ import (
 	"app.local/internal/kit/secrand"
 )
 
-// Authenticate 是每个请求的会话校验（鉴权中间件用）：按 sid 查会话（带
-// users.status），已吊销、已过期、空闲超时、账号非 active 或查询失败一律拒绝。
+// Authenticate 是每个请求的会话校验（鉴权中间件用）：按 sid 查会话（带 users.status），已吊销、已过期、
+// 空闲超时、账号非 active 返回 ErrInvalidToken，被新登录顶掉的返回 ErrSessionReplaced（都是 401）；查询失败
+// 原样返回，渲染成 500：同样拒绝，但客户端不会因为服务端故障清掉令牌。
 func (s *Service) Authenticate(ctx context.Context, sid string) (*Session, error) {
 	sess, err := s.sessions.GetValid(ctx, sid)
-	if errors.Is(err, ErrNotFound) {
-		return nil, fmt.Errorf("authenticate: %w", ErrInvalidToken)
+	if err == nil {
+		return sess, nil
 	}
-	if err != nil {
+	if !errors.Is(err, ErrNotFound) {
 		return nil, fmt.Errorf("authenticate: %w", err)
 	}
-	return sess, nil
+	raw, err := s.sessions.Get(ctx, sid)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return nil, fmt.Errorf("authenticate: %w", err)
+	}
+	if raw != nil && raw.Replaced {
+		return nil, fmt.Errorf("authenticate: %w", ErrSessionReplaced)
+	}
+	return nil, fmt.Errorf("authenticate: %w", ErrInvalidToken)
+}
+
+// validSession 是已登录操作（绑定、重新验证）取当前会话：失效时返回 ErrInvalidToken，查询失败原样返回（500），
+// 和 Authenticate 一样不把服务端故障说成登录失效。
+func (s *Service) validSession(ctx context.Context, sid string) (*Session, error) {
+	sess, err := s.sessions.GetValid(ctx, sid)
+	if errors.Is(err, ErrNotFound) {
+		return nil, ErrInvalidToken
+	}
+	return sess, err
 }
 
 // newSession 建一行会话；返回的 refreshRandom 是 refresh token 的随机串部分
 // （明文只出现在签发响应里，库里只存它的摘要）。
-func (s *Service) newSession(ctx context.Context, userID string, loginIdentityID *string, client, deviceName, ip, userAgent, method string) (*Session, string, error) {
+func (s *Service) newSession(ctx context.Context, userID string, loginIdentityID *string, lc LoginClient, method string) (*Session, string, error) {
 	refreshRandom := secrand.URL(32)
 	now := time.Now()
 	sess := &Session{
 		ID:               uuid.NewV7().String(),
 		UserID:           userID,
-		Client:           client,
+		Client:           lc.Client,
+		ClientVersion:    lc.ClientVersion,
+		ClientOS:         lc.ClientOS,
+		DeviceClass:      lc.DeviceClass,
 		AMR:              []string{method},
 		LoginIdentityID:  loginIdentityID,
 		AuthTime:         now,
 		RefreshFamily:    secrand.URL(16),
 		RefreshTokenHash: secrand.Hash(refreshRandom),
-		DeviceName:       deviceName,
-		IP:               ip,
-		UserAgent:        userAgent,
+		DeviceName:       lc.DeviceName,
+		IP:               lc.IP,
+		UserAgent:        lc.UserAgent,
 		CreatedAt:        now,
 		UpdatedAt:        now,
 		LastUsedAt:       now,
@@ -102,6 +123,10 @@ func (s *Service) Refresh(ctx context.Context, presented string) (*IssuedTokens,
 	}
 	if err != nil {
 		return nil, fmt.Errorf("refresh: %w", err)
+	}
+	if old.Replaced && old.holds(secrand.Hash(random)) {
+		// 只告诉确实持有这个会话的人：只凭 family 探测不出"账号在别处登录了"。
+		return nil, fmt.Errorf("refresh: %w", ErrSessionReplaced)
 	}
 	if old.ValidAt(now, s.cfg.SessionIdleTimeout) {
 		// 会话有效但出示的不是当前/宽限期内的上一代：旧 token 被人用过，吊销会话。

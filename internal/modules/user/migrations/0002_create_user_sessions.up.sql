@@ -1,10 +1,13 @@
 -- 前台用户的登录会话，规则见 internal/modules/user/docs/user.md 的"会话"。登录时签发，每个请求按 sid
--- 校验；吊销（登出、踢下线、停用、注销）只标记 revoked_at，user 的定时清理任务再物理删除
--- 已过期、以及吊销超过保留期的行。
+-- 校验；吊销（登出、踢下线、停用、注销、换绑解绑、令牌泄露、被同类设备的新登录顶掉）只标记 revoked_at，
+-- user 的定时清理任务再物理删除已过期、以及吊销超过保留期的行。
 CREATE TABLE user_sessions (
     id UUID,
     user_id UUID NOT NULL,
     client TEXT NOT NULL,
+    client_version TEXT NOT NULL DEFAULT '',
+    client_os TEXT NOT NULL DEFAULT '',
+    device_class TEXT NOT NULL DEFAULT '',
     amr TEXT[] NOT NULL,
     login_identity_id UUID,
     auth_time TIMESTAMPTZ NOT NULL,
@@ -20,6 +23,7 @@ CREATE TABLE user_sessions (
     last_used_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     expires_at TIMESTAMPTZ NOT NULL,
     revoked_at TIMESTAMPTZ,
+    replaced BOOLEAN NOT NULL DEFAULT FALSE,
     CONSTRAINT pk_user_sessions PRIMARY KEY (id),
     CONSTRAINT uk_user_sessions_refresh_family UNIQUE (refresh_family)
 );
@@ -30,7 +34,10 @@ CREATE INDEX idx_user_sessions_user_id ON user_sessions (user_id);
 COMMENT ON TABLE user_sessions IS '前台用户的登录会话；吊销时标记 revoked_at，过期和吊销超过保留期的行由定时任务删除';
 COMMENT ON COLUMN user_sessions.id IS '会话 ID（sid），应用层生成的 UUIDv7';
 COMMENT ON COLUMN user_sessions.user_id IS '用户 ID（users.id），无外键';
-COMMENT ON COLUMN user_sessions.client IS '客户端；取值 web、app、miniprogram';
+COMMENT ON COLUMN user_sessions.client IS '客户端：宿主和形态由登录入口决定，App 的系统是客户端自报的；取值 web、android、ios、harmonyos、wechat-miniprogram，接入新的登录入口时追加';
+COMMENT ON COLUMN user_sessions.client_version IS '登录时客户端上报的版本（X-Client-Version）；没有上报时为空字符串';
+COMMENT ON COLUMN user_sessions.client_os IS '登录时小程序宿主所在的系统（X-Client-OS）；没有上报时为空字符串';
+COMMENT ON COLUMN user_sessions.device_class IS 'App 登录时上报的设备形态；取值 phone、tablet，其它入口为空字符串';
 COMMENT ON COLUMN user_sessions.amr IS '本会话用过的验证方式，如 otp_sms、wechat';
 COMMENT ON COLUMN user_sessions.login_identity_id IS '登录用的登录方式（user_identities.id），解绑它时吊销本会话；NULL 表示没有';
 COMMENT ON COLUMN user_sessions.auth_time IS '最近一次验证身份的时间（登录或重新验证）';
@@ -46,3 +53,4 @@ COMMENT ON COLUMN user_sessions.updated_at IS '最后更新时间';
 COMMENT ON COLUMN user_sessions.last_used_at IS '最后使用时间';
 COMMENT ON COLUMN user_sessions.expires_at IS '绝对过期时间';
 COMMENT ON COLUMN user_sessions.revoked_at IS '吊销时间；NULL 表示未吊销';
+COMMENT ON COLUMN user_sessions.replaced IS '是否被同一类设备上的新登录顶掉（会话策略吊销）；客户端据此提示账号已在其它设备登录';

@@ -32,6 +32,42 @@ type User struct {
 	UpdatedAt    time.Time
 }
 
+// 会话和建号记录的客户端（users.signup_client、user_sessions.client）。小程序、小游戏是"<生态>-<形态>"，
+// 由登录入口（AppID）决定；App 入口按客户端上报的 X-Client-Platform 区分系统。
+const (
+	ClientWeb               = "web"
+	ClientAndroid           = "android"
+	ClientIOS               = "ios"
+	ClientHarmonyOS         = "harmonyos"
+	ClientWeChatMiniprogram = "wechat-miniprogram"
+)
+
+// IsAppClient 报告是不是 App 入口允许的客户端：同一个微信移动应用在三个系统上共用一组 AppID。
+func IsAppClient(v string) bool {
+	switch v {
+	case ClientAndroid, ClientIOS, ClientHarmonyOS:
+		return true
+	}
+	return false
+}
+
+// App 登录时上报的设备形态（user_sessions.device_class）；其它入口为空。
+const (
+	DeviceClassPhone  = "phone"
+	DeviceClassTablet = "tablet"
+)
+
+// LoginClient 是建会话时记录的客户端信息。Client 由登录入口决定；其余字段是客户端自报的，只用于展示和会话策略。
+type LoginClient struct {
+	Client        string
+	ClientVersion string
+	ClientOS      string
+	DeviceClass   string
+	DeviceName    string
+	IP            string
+	UserAgent     string
+}
+
 // PublicProfile 是业务模块可以读取的用户公开资料和状态。
 type PublicProfile struct {
 	ID          string
@@ -78,6 +114,9 @@ type Session struct {
 	ID                       string
 	UserID                   string
 	Client                   string
+	ClientVersion            string // 登录时的客户端版本，没有上报时为空
+	ClientOS                 string // 登录时小程序宿主所在的系统，没有上报时为空
+	DeviceClass              string // App 登录时的设备形态（phone、tablet），其它入口为空
 	AMR                      []string
 	LoginIdentityID          *string
 	AuthTime                 time.Time
@@ -93,12 +132,20 @@ type Session struct {
 	LastUsedAt               time.Time
 	ExpiresAt                time.Time
 	RevokedAt                *time.Time
+	// Replaced 表示会话被同一类设备上的新登录顶掉（会话策略吊销），客户端据此提示"账号已在其它设备登录"。
+	Replaced bool
 }
 
 // ValidAt 报告会话在 now 是否可用：未吊销、未绝对过期、未空闲超时。账号状态
 // 由查询方一并检查（GetValid 带 users.status）。
 func (s *Session) ValidAt(now time.Time, idleTimeout time.Duration) bool {
 	return s.RevokedAt == nil && now.Before(s.ExpiresAt) && now.Sub(s.LastUsedAt) < idleTimeout
+}
+
+// holds 报告出示的 refresh token 摘要是不是这个会话的当前值或上一代。
+func (s *Session) holds(presentedHash string) bool {
+	return s.RefreshTokenHash == presentedHash ||
+		(s.PreviousRefreshTokenHash != nil && *s.PreviousRefreshTokenHash == presentedHash)
 }
 
 // OAuthStateKind 是 oauth_states.kind 的取值（目前只用 state/result）。

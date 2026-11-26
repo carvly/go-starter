@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/labstack/echo/v5"
@@ -84,7 +85,7 @@ func TestAPI_BusinessErrorHasNoCallChain(t *testing.T) {
 // ContentLength = -1 模拟 chunked 请求，强制 BodyLimit 走边读边计数的路径。
 func TestAPI_BodyTooLargeReturns413(t *testing.T) {
 	e := newPipelineTestAPI(t)
-	payload := []byte(`{"code":"` + string(bytes.Repeat([]byte("a"), 3*1024*1024)) + `","client":"miniprogram"}`)
+	payload := []byte(`{"code":"` + string(bytes.Repeat([]byte("a"), 3*1024*1024)) + `"}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/auth/native/wechat-miniprogram/login", bytes.NewReader(payload))
 	req.Header.Set(echo.HeaderContentType, "application/json")
 	req.ContentLength = -1
@@ -99,11 +100,12 @@ func TestAPI_BodyTooLargeReturns413(t *testing.T) {
 func TestAPI_RequestValidation_RejectsInvalidInput(t *testing.T) {
 	e := newPipelineTestAPI(t)
 	for _, body := range []map[string]any{
-		{"client": "miniprogram"},
-		{"code": "x", "client": "invalid"},
+		{"code": "x", "device_class": "laptop"},
+		{"code": "x", "name": strings.Repeat("名", 129)},
 	} {
-		if status, resp := doPipelineJSON(t, e, http.MethodPost, "/v1/auth/native/wechat-miniprogram/login", body); status != http.StatusBadRequest {
-			t.Errorf("status = %d, want 400, body = %v", status, resp)
+		status, resp := doPipelineJSON(t, e, http.MethodPost, "/v1/auth/native/wechat-miniprogram/login", body)
+		if status != http.StatusBadRequest || resp["code"] != "invalid_request" {
+			t.Errorf("status = %d, body = %v, want 400 invalid_request（字段校验）", status, resp)
 		}
 	}
 }

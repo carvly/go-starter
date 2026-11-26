@@ -25,7 +25,9 @@
 
 - **默认：会话中间件**（`internal/modules/user/httpapi/middleware.go` 的
   `NewSessionMiddleware`）：验签（HS256 + `kid` 轮换，旧密钥放 `JWT_ADDITIONAL_KEYS`）
-  → 校验 iss/aud/exp → 按 `sid` 查会话。吊销立即生效，† 操作拿得到 `auth_time`；
+  → 校验 iss/aud/exp → 按 `sid` 查会话。吊销立即生效，† 操作拿得到 `auth_time`。没带令牌、验签失败、会话失效返回
+  401 `invalid_token`，会话被同类设备的新登录顶掉返回 401 `session_replaced`（见 user.md 的"会话策略"）；查会话的
+  数据库查询失败也拒绝，但返回 500：客户端只在 401 时清掉令牌重新登录，服务端故障不会把用户登出；
 - **网关信任 header**（`trusted_identity_middleware.go`）：部署在已经校验过身份的
   网关后面时用。这个模式下 `UserSession` 只有 `UserID`，没有服务端会话：依赖会话的操作（† 操作、绑定、
   重新验证）一律返回 403 `session_unavailable`（fail closed），不返回 `recent_auth_required`，客户端不会
@@ -71,6 +73,7 @@ func Register(g *echo.Group, h *Handler, mw Middlewares) {
 - 密码哈希是 Argon2id（`alexedwards/argon2id`，`internal/platform/crypto`），参数从基础设施配置
   （`ARGON2_*`）显式传入，不依赖库默认值，按部署环境内存和登录 QPS 压测调整。现在只有后台
   员工的密码用它，前台加密码登录时复用同一组参数；
-- 会话和权限每个请求都查库、不缓存，查询失败必须拒绝（fail closed）：吊销、停用、收回权限立即生效；
+- 会话和权限每个请求都查库、不缓存，查询失败必须拒绝（fail closed）：吊销、停用、收回权限立即生效。前台的查询失败
+  返回 500 而不是 401，拒绝不变，只是不让客户端误以为登录失效；
 - 登录失败对客户端不暴露原因（账号是否存在、第三方的具体错误），细节只进日志；
 - 前台和后台各自模块的具体规则见上面两篇模块文档。

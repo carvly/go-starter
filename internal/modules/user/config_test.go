@@ -115,3 +115,24 @@ func TestConfig_Redacted(t *testing.T) {
 		t.Errorf("jwt_signing_key = %v", got)
 	}
 }
+
+func TestLoadConfig_SessionSlotLimit(t *testing.T) {
+	setAuthEnv(t)
+	cfg, err := LoadConfig(config.NewSource())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SessionSlotLimit != 0 || configuredSessionPolicy(cfg) != nil {
+		t.Errorf("默认不启用会话策略：limit=%d", cfg.SessionSlotLimit)
+	}
+	t.Setenv("USER_SESSION_SLOT_LIMIT", "1")
+	if cfg, err = LoadConfig(config.NewSource()); err != nil || configuredSessionPolicy(cfg) == nil {
+		t.Errorf("USER_SESSION_SLOT_LIMIT=1 应启用内置策略：%v", err)
+	}
+	for _, bad := range []string{"-1", "one"} {
+		t.Setenv("USER_SESSION_SLOT_LIMIT", bad)
+		if _, err := LoadConfig(config.NewSource()); err == nil || !strings.Contains(err.Error(), "USER_SESSION_SLOT_LIMIT") {
+			t.Errorf("USER_SESSION_SLOT_LIMIT=%q error = %v, want 指明配置项的错误", bad, err)
+		}
+	}
+}

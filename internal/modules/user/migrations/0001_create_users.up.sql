@@ -22,6 +22,6 @@ COMMENT ON COLUMN users.display_name IS '昵称';
 COMMENT ON COLUMN users.avatar_url IS '头像';
 COMMENT ON COLUMN users.status IS '状态；取值 active 正常、disabled 已停用、deleted 已注销';
 COMMENT ON COLUMN users.last_login_at IS '最近登录时间';
-COMMENT ON COLUMN users.signup_client IS '建号时的客户端；取值 web、app、miniprogram';
+COMMENT ON COLUMN users.signup_client IS '建号时的客户端；取值 web、android、ios、harmonyos、wechat-miniprogram，接入新的登录入口时追加';
 COMMENT ON COLUMN users.created_at IS '创建时间';
 COMMENT ON COLUMN users.updated_at IS '最后更新时间';

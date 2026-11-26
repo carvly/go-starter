@@ -522,7 +522,7 @@ export interface components {
         Error: {
             /**
              * 错误码
-             * @description 机器可读的错误码，取值由各模块 domain/errors.go 定义。
+             * @description 机器可读的错误码，取值由各模块 domain/errors.go（检查请求本身的由接入包的 errors.go）定义。
              * @example permission_denied
              */
             code: string;
@@ -975,7 +975,12 @@ export interface components {
          * @description 客户端类型
          * @enum {string}
          */
-        UserSessionClient: "web" | "app" | "miniprogram";
+        UserSessionClient: "web" | "android" | "ios" | "harmonyos" | "wechat-miniprogram";
+        /**
+         * @description 设备形态（只有 App 登录有）
+         * @enum {string}
+         */
+        UserSessionDeviceClass: "phone" | "tablet";
         UserSession: {
             /**
              * ID
@@ -984,6 +989,18 @@ export interface components {
             id: string;
             /** 客户端 */
             client: components["schemas"]["UserSessionClient"];
+            /**
+             * 客户端版本
+             * @description 客户端没有上报时不返回
+             */
+            client_version?: string;
+            /**
+             * 宿主系统
+             * @description 小程序宿主所在的系统；没有上报时不返回
+             */
+            client_os?: string;
+            /** 设备形态 */
+            device_class?: components["schemas"]["UserSessionDeviceClass"];
             /** 设备名 */
             device_name: string;
             /** 登录 IP */

@@ -17,12 +17,16 @@ import (
 	"app.local/internal/platform/httpserver"
 )
 
-// authenticator 是 SessionAuthenticator 的内存实现。
+// authenticator 是 SessionAuthenticator 的内存实现；err 非空时 Authenticate 总是返回它。
 type authenticator struct {
 	sessions map[string]*domain.Session
+	err      error
 }
 
 func (a authenticator) Authenticate(_ context.Context, sid string) (*domain.Session, error) {
+	if a.err != nil {
+		return nil, a.err
+	}
 	if s, ok := a.sessions[sid]; ok {
 		return s, nil
 	}
@@ -84,22 +88,27 @@ func TestSessionMiddleware_Rejects(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	dbDown := errors.New("connection refused")
 	tests := []struct {
-		name      string
-		authz     string
-		sessions  map[string]*domain.Session
-		wantError bool
+		name     string
+		authz    string
+		sessions map[string]*domain.Session
+		authErr  error
+		want     error
 	}{
-		{"没有 Authorization 头", "", map[string]*domain.Session{"sid-1": {}}, true},
-		{"不是 Bearer", "Basic abc", map[string]*domain.Session{"sid-1": {}}, true},
-		{"签名不对", "Bearer " + valid + "x", map[string]*domain.Session{"sid-1": {}}, true},
-		{"iss 不对", "Bearer " + wrongIss, map[string]*domain.Session{"sid-1": {}}, true},
-		{"token 里没有 sid", "Bearer " + noSID, map[string]*domain.Session{"sid-1": {}}, true},
-		{"会话不存在（查库失败也拒绝）", "Bearer " + valid, map[string]*domain.Session{}, true},
+		{"没有 Authorization 头", "", map[string]*domain.Session{"sid-1": {}}, nil, domain.ErrInvalidToken},
+		{"不是 Bearer", "Basic abc", map[string]*domain.Session{"sid-1": {}}, nil, domain.ErrInvalidToken},
+		{"签名不对", "Bearer " + valid + "x", map[string]*domain.Session{"sid-1": {}}, nil, domain.ErrInvalidToken},
+		{"iss 不对", "Bearer " + wrongIss, map[string]*domain.Session{"sid-1": {}}, nil, domain.ErrInvalidToken},
+		{"token 里没有 sid", "Bearer " + noSID, map[string]*domain.Session{"sid-1": {}}, nil, domain.ErrInvalidToken},
+		{"会话不存在", "Bearer " + valid, map[string]*domain.Session{}, nil, domain.ErrInvalidToken},
+		{"会话被新登录顶掉", "Bearer " + valid, nil, domain.ErrSessionReplaced, domain.ErrSessionReplaced},
+		// 查库失败也拒绝，但不翻译成 401：渲染成 500，客户端不会因为服务端故障清掉令牌。
+		{"查库失败", "Bearer " + valid, nil, dbDown, dbDown},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			authMw := httpapi.NewSessionMiddleware(authenticator{sessions: tt.sessions}, "kid", []byte("secret"), nil)
+			authMw := httpapi.NewSessionMiddleware(authenticator{sessions: tt.sessions, err: tt.authErr}, "kid", []byte("secret"), nil)
 			called := false
 			handler := authMw(func(c *echo.Context) error {
 				called = true
@@ -114,17 +123,8 @@ func TestSessionMiddleware_Rejects(t *testing.T) {
 			c := e.NewContext(req, rec)
 			err := handler(c)
 
-			if !tt.wantError && err != nil {
-				t.Fatalf("error = %v, want nil", err)
-			}
-			if tt.wantError {
-				if err == nil {
-					t.Fatal("error = nil, want 401")
-				}
-				he, ok := err.(*echo.HTTPError)
-				if !ok || he.Code != http.StatusUnauthorized {
-					t.Fatalf("error = %v, want 401 *echo.HTTPError", err)
-				}
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("error = %v, want %v", err, tt.want)
 			}
 			if called {
 				t.Error("被拒绝时不应该放行到 handler")
@@ -182,23 +182,19 @@ func TestTrustedIdentityMiddleware(t *testing.T) {
 		}
 	})
 
-	t.Run("缺 header 或纯空白返回 401，不放行到 handler", func(t *testing.T) {
+	t.Run("缺 header 或纯空白返回 401 invalid_token，不放行到 handler", func(t *testing.T) {
 		for _, v := range []string{"", "   "} {
-			e := echo.New()
 			mw := httpapi.NewTrustedIdentityMiddleware("")
 			called := false
-			e.GET("/protected", func(c *echo.Context) error {
+			handler := mw(func(c *echo.Context) error {
 				called = true
 				return c.NoContent(http.StatusOK)
-			}, mw)
-
+			})
 			req := httptest.NewRequest(http.MethodGet, "/protected", nil)
 			req.Header.Set(httpapi.DefaultTrustedIdentityHeader, v)
-			rec := httptest.NewRecorder()
-			e.ServeHTTP(rec, req)
-
-			if rec.Code != http.StatusUnauthorized || called {
-				t.Errorf("header=%q status = %d called = %v, want 401 + 不放行", v, rec.Code, called)
+			err := handler(echo.New().NewContext(req, httptest.NewRecorder()))
+			if !errors.Is(err, domain.ErrInvalidToken) || called {
+				t.Errorf("header=%q error = %v called = %v, want ErrInvalidToken + 不放行", v, err, called)
 			}
 		}
 	})

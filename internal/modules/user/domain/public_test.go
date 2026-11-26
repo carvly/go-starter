@@ -27,7 +27,7 @@ func TestGetPublicProfiles(t *testing.T) {
 
 func TestWeChatOpenID(t *testing.T) {
 	svc, _ := newAccountService()
-	tokens, err := svc.Login(t.Context(), "miniprogram", "", "127.0.0.1", "", wechatIdentity("openid-query"))
+	tokens, err := svc.Login(t.Context(), domain.LoginClient{Client: domain.ClientWeChatMiniprogram, IP: "127.0.0.1"}, wechatIdentity("openid-query"))
 	if err != nil {
 		t.Fatal(err)
 	}

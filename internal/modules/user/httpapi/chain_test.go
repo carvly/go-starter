@@ -185,11 +185,20 @@ func issueNonce(t *testing.T, e *echo.Echo, provider string) (int, string) {
 	return rec.Code, body["nonce"]
 }
 
+// nativeLogin 以 Android App 的身份登录（App 入口要求 X-Client-Platform）。
 func nativeLogin(t *testing.T, e *echo.Echo, provider string, body map[string]string) *httptest.ResponseRecorder {
+	t.Helper()
+	return nativeLoginWith(t, e, provider, body, map[string]string{httpserver.HeaderClientPlatform: "android"})
+}
+
+func nativeLoginWith(t *testing.T, e *echo.Echo, provider string, body, header map[string]string) *httptest.ResponseRecorder {
 	t.Helper()
 	data, _ := json.Marshal(body)
 	req := httptest.NewRequest(http.MethodPost, "/v1/auth/native/"+provider+"/login", strings.NewReader(string(data)))
 	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	for k, v := range header {
+		req.Header.Set(k, v)
+	}
 	return doRequest(t, e, req)
 }
 
@@ -204,7 +213,7 @@ func TestChain_NativeNonce(t *testing.T) {
 	if status != http.StatusOK || nonce == "" {
 		t.Fatalf("签发 nonce = %d %q", status, nonce)
 	}
-	rec := nativeLogin(t, e, "oidc-app", map[string]string{"client": "app", "id_token": "T1", "nonce": nonce, "name": "张三"})
+	rec := nativeLogin(t, e, "oidc-app", map[string]string{"device_class": "phone", "id_token": "T1", "nonce": nonce, "name": "张三"})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("带 nonce 登录 = %d, body=%s", rec.Code, rec.Body.String())
 	}
@@ -214,21 +223,21 @@ func TestChain_NativeNonce(t *testing.T) {
 	failed := func(rec *httptest.ResponseRecorder) bool {
 		return rec.Code == http.StatusUnauthorized && strings.Contains(rec.Body.String(), "login_failed")
 	}
-	if rec := nativeLogin(t, e, "oidc-app", map[string]string{"client": "app", "id_token": "T1", "nonce": nonce}); !failed(rec) {
+	if rec := nativeLogin(t, e, "oidc-app", map[string]string{"device_class": "phone", "id_token": "T1", "nonce": nonce}); !failed(rec) {
 		t.Errorf("nonce 第二次使用 = %d %s, want 统一的登录失败", rec.Code, rec.Body.String())
 	}
 	_, forOther := issueNonce(t, e, "oidc-other")
-	if rec := nativeLogin(t, e, "oidc-app", map[string]string{"client": "app", "id_token": "T1", "nonce": forOther}); !failed(rec) {
+	if rec := nativeLogin(t, e, "oidc-app", map[string]string{"device_class": "phone", "id_token": "T1", "nonce": forOther}); !failed(rec) {
 		t.Errorf("用签发给别的 provider 的 nonce = %d, want 登录失败", rec.Code)
 	}
-	if rec := nativeLogin(t, e, "oidc-app", map[string]string{"client": "app", "id_token": "T1"}); !failed(rec) {
+	if rec := nativeLogin(t, e, "oidc-app", map[string]string{"device_class": "phone", "id_token": "T1"}); !failed(rec) {
 		t.Errorf("要求 nonce 却没带 = %d, want 登录失败", rec.Code)
 	}
 	if status, _ := issueNonce(t, e, "plain-app"); status != http.StatusBadRequest {
 		t.Errorf("不要求 nonce 的 provider 签发 = %d, want 400", status)
 	}
 	// 缺 provider 需要的字段：ErrMissingCredential 对客户端也是统一的登录失败。
-	if rec := nativeLogin(t, e, "plain-app", map[string]string{"client": "app", "code": "c"}); !failed(rec) {
+	if rec := nativeLogin(t, e, "plain-app", map[string]string{"device_class": "phone", "code": "c"}); !failed(rec) {
 		t.Errorf("缺 id_token = %d, want 登录失败", rec.Code)
 	}
 }

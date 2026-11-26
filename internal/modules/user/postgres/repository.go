@@ -78,7 +78,9 @@ func (r *Repository) ListByIDs(ctx context.Context, ids []string) ([]*domain.Use
 }
 
 func (r *Repository) TouchLogin(ctx context.Context, id string) (*domain.User, error) {
-	rows, err := r.handle.Resolve(ctx).Query(ctx, `UPDATE users SET last_login_at = now(), updated_at = now() WHERE id = $1 RETURNING `+columns, id)
+	rows, err := r.handle.Resolve(ctx).Query(ctx, `
+		UPDATE users SET last_login_at = now(), updated_at = now() WHERE id = $1 AND status = $2
+		RETURNING `+columns, id, domain.UserStatusActive)
 	if err != nil {
 		return nil, mapErr("touch login", err)
 	}
@@ -133,17 +135,11 @@ func (r *Repository) Enable(ctx context.Context, id string) (*domain.User, error
 	return nil, domain.ErrNotFound
 }
 
-// Disable 是动作"停用"：改状态和吊销会话写在同一条语句里（数据修改的 CTE 总会执行），原子完成，
-// 条件也在同一条 UPDATE 里。
+// Disable 是动作"停用"：只改状态，条件在同一条 UPDATE 里。吊销会话由 Service 在同一个事务里随后执行。
 func (r *Repository) Disable(ctx context.Context, id string) (*domain.User, error) {
 	rows, err := r.handle.Resolve(ctx).Query(ctx, `
-		WITH u AS (
-			UPDATE users SET status = $2, updated_at = now() WHERE id = $1 AND status = $3 RETURNING `+columns+`
-		), revoked AS (
-			UPDATE user_sessions SET revoked_at = now(), updated_at = now()
-			WHERE user_id IN (SELECT id FROM u) AND revoked_at IS NULL
-		)
-		SELECT `+columns+` FROM u`, id, domain.UserStatusDisabled, domain.UserStatusActive)
+		UPDATE users SET status = $2, updated_at = now() WHERE id = $1 AND status = $3
+		RETURNING `+columns, id, domain.UserStatusDisabled, domain.UserStatusActive)
 	if err != nil {
 		return nil, mapErr("disable", err)
 	}

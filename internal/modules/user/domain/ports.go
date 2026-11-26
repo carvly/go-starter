@@ -15,14 +15,15 @@ type Repository interface {
 	Create(ctx context.Context, v *User) error
 	GetByID(ctx context.Context, id string) (*User, error)
 	ListByIDs(ctx context.Context, ids []string) ([]*User, error)
-	// TouchLogin 更新账号的最近登录时间。
+	// TouchLogin 更新 active 账号的最近登录时间；账号不存在或不是 active 返回 ErrNotFound。这条 UPDATE 同时锁住
+	// 用户行，同一账号的并发登录在登录事务里排队，会话策略据此看到彼此的会话。
 	TouchLogin(ctx context.Context, id string) (*User, error)
 	// List 是后台列表：只放有值的筛选条件，按 s 排序后再按 id 排，总数封顶在 page.MaxTotal。
 	List(ctx context.Context, f UserFilter, s page.Sort, p page.Request) (page.Result[*User], error)
 	// Enable 是动作"启用"：条件和更新写在同一条 SQL 里；不存在返回 ErrNotFound，条件不满足返回 ErrInvalidState。
 	Enable(ctx context.Context, id string) (*User, error)
-	// Disable 是动作"停用"：状态从 active 改为 disabled，同时吊销该用户全部未吊销的会话，两者原子
-	// 完成；不存在返回 ErrNotFound，状态不是 active 返回 ErrInvalidState。
+	// Disable 是动作"停用"：状态从 active 改为 disabled；不存在返回 ErrNotFound，状态不是 active 返回
+	// ErrInvalidState。吊销会话由 Service 在同一个事务里随后执行（见 Service.Disable）。
 	Disable(ctx context.Context, id string) (*User, error)
 	// UpdateProfile 是 PATCH /v1/me：nil 表示不改该字段。
 	UpdateProfile(ctx context.Context, id string, displayName, avatarURL *string) (*User, error)
@@ -61,9 +62,14 @@ type WeChatOpenIDRepository interface {
 type SessionRepository interface {
 	Create(ctx context.Context, v *Session) error
 	// GetValid 按 sid 查会话并带 users.status：存在、未吊销、未过期、未空闲超时且账号
-	// active 才返回；查不到或账号不是 active 返回 ErrNotFound（调用方一律当 401 处理，
-	// 查询失败也拒绝）。
+	// active 才返回；查不到或账号不是 active 返回 ErrNotFound（调用方当 401 处理；
+	// 查询失败返回其它错误，调用方按 500 拒绝）。
 	GetValid(ctx context.Context, sid string) (*Session, error)
+	// ListActiveByUser 列出账号的有效会话（未吊销、未过期、未空闲超时，与 GetValid 同一条件），按 last_used_at、id
+	// 升序。会话策略用，调用方已在登录事务里锁住用户行。
+	ListActiveByUser(ctx context.Context, userID string) ([]*Session, error)
+	// RevokeReplaced 吊销该账号的这些会话并标记为被新登录顶掉；不属于该账号或已吊销的 ID 不受影响。
+	RevokeReplaced(ctx context.Context, userID string, ids []string) error
 	GetByFamily(ctx context.Context, family string) (*Session, error)
 	// Get 按 sid 查原始行（不校验有效性），用于踢下线时的归属检查。
 	Get(ctx context.Context, sid string) (*Session, error)
@@ -121,6 +127,8 @@ type Deps struct {
 	UoW        uow.UnitOfWork
 	Logger     *slog.Logger
 	Config     Config
+	// SessionPolicy 为 nil 时登录不顶掉任何会话。
+	SessionPolicy SessionPolicy
 }
 
 // Config 是登录与会话的可调参数，来自 user.Config（module.go 转换）。

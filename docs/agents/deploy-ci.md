@@ -70,12 +70,12 @@
   见 [observability.md](observability.md) 的"两种 Registry 的归属不同"。
   首个超级管理员
   用 `docker compose run --rm api staff create -username root` 创建（见 `internal/modules/staff/docs/staff.md`），
-  会话和日志参数是 `STAFF_*` 环境变量。前台用户的登录会话和微信凭据是 `AUTH_*` /
+  会话和日志参数是 `STAFF_*` 环境变量。前台用户的登录会话和微信凭据是 `USER_*` /
   `WECHAT_*` 环境变量（见 `internal/modules/user/docs/user.md` 和 `configs/.env.example`）。其中
   `USER_PUBLIC_BASE_URL` 是必需项，缺了 api 和 worker 都起不来；`WECHAT_*` 四个入口按产品
-  需要组合，每个入口的 `_APP_ID` / `_SECRET` 成对配置才启用，只配一半启动失败；其余 `AUTH_*`
+  需要组合，每个入口的 `_APP_ID` / `_SECRET` 成对配置才启用，只配一半启动失败；其余 `USER_*`
   时长有默认值，`USER_COOKIE_DELIVERY_ORIGINS`、`USER_TRUSTED_IDENTITY_HEADER`（网关信任 header 模式，见
-  auth.md 的"前台鉴权"）可选。`HTTP_GLOBAL_RATE_LIMIT_PER_SECOND`、`HTTP_REQUEST_TIMEOUT`、
+  auth.md 的"前台鉴权"）、`USER_SESSION_SLOT_LIMIT`（按设备类别互踢，默认不启用，见 user.md 的"会话策略"）可选。`HTTP_GLOBAL_RATE_LIMIT_PER_SECOND`、`HTTP_REQUEST_TIMEOUT`、
   `HTTP_BODY_LIMIT_BYTES` 必须为正数，否则启动失败；默认值只在 `internal/config` 一处。
   `USER_PUBLIC_BASE_URL` 和 `USER_COOKIE_DELIVERY_ORIGINS` 里的每一项都必须是规范的 origin
   （小写 `scheme://host[:port]`，不带默认端口和路径），否则启动失败。compose 在 `x-user-env` 里给了开发默认值（微信各入口默认不启用，

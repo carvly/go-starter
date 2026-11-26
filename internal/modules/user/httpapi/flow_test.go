@@ -80,9 +80,22 @@ func newFlowServerWith(t *testing.T, registry oauth.Registry) (*echo.Echo, *doma
 
 	issuer := crypto.NewTokenIssuer("flow-secret", "flow-kid")
 	pass := func(next echo.HandlerFunc) echo.HandlerFunc { return next }
+	// 测试里的原生入口：mini- 开头的按小程序登记，其余按 App 入口登记。
+	nativeClients := map[string]string{}
+	for name, entry := range registry {
+		if entry.Native == nil {
+			continue
+		}
+		if strings.HasPrefix(name, "mini-") {
+			nativeClients[name] = domain.ClientWeChatMiniprogram
+		} else {
+			nativeClients[name] = ""
+		}
+	}
 	h := httpapi.NewHandler(httpapi.Deps{
 		Service:               svc,
 		OAuth:                 registry,
+		NativeClients:         nativeClients,
 		PublicBaseURL:         "https://api.example.com",
 		CookieDeliveryOrigins: []string{"https://app.example.com"},
 	})

@@ -66,9 +66,10 @@ func RunRepositoryContract(t *testing.T, newRepo func(t *testing.T) domain.Repos
 		}
 	})
 
-	t.Run("ListByIDs 只返回存在的用户，TouchLogin 更新最近登录时间", func(t *testing.T) {
+	t.Run("ListByIDs 只返回存在的用户，TouchLogin 只更新 active 账号的最近登录时间", func(t *testing.T) {
 		repo := newRepo(t)
 		v := ValidUser()
+		v.Status = domain.UserStatusActive
 		v.LastLoginAt = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
 		create(t, repo, v)
 		old := v.LastLoginAt
@@ -85,6 +86,14 @@ func RunRepositoryContract(t *testing.T, newRepo func(t *testing.T) domain.Repos
 		}
 		if _, err := repo.TouchLogin(ctx, uuid.NewV7().String()); !errors.Is(err, domain.ErrNotFound) {
 			t.Errorf("TouchLogin 不存在 error = %v, want ErrNotFound", err)
+		}
+		for _, status := range []domain.UserStatus{domain.UserStatusDisabled, domain.UserStatusDeleted} {
+			inactive := ValidUser()
+			inactive.Status = status
+			create(t, repo, inactive)
+			if _, err := repo.TouchLogin(ctx, inactive.ID); !errors.Is(err, domain.ErrNotFound) {
+				t.Errorf("TouchLogin %s 账号 error = %v, want ErrNotFound", status, err)
+			}
 		}
 	})
 

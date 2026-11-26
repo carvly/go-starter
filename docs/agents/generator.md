@@ -47,8 +47,8 @@
      Service 方法。
    - 每条 `rules`：实现 `checkRuleN`。
    - `custom` 动作要读写本模块的另一张表时（如停用用户时吊销 `user_sessions` 里的会话）：手写这张表的
-     migration，在 `postgres/tables.go` 登记；能写成一条语句的用数据修改的 CTE，否则用
-     `UnitOfWork.Run`（[transactions.md](transactions.md)）。这类改动汇报时说明：改了生成的已有
+     migration，在 `postgres/tables.go` 登记；能写成一条语句、且不会等别的事务往那张表里写行的，用数据修改的 CTE，
+     否则用 `UnitOfWork.Run`（[transactions.md](transactions.md)，含停用用户为什么要拆成两条语句）。这类改动汇报时说明：改了生成的已有
      声明（如 `tables.go` 的 `Tables`）会出现在 `gen drift` 里，新建的文件（另一张表的 migration、
      新的 `postgres/*.go`）不会，要用 `git status` 补列。
    - 把对应的 `NotImplemented` 测试换成覆盖每条规则、每个声明的错误的测试。

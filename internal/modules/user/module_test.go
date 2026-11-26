@@ -9,6 +9,9 @@ import (
 	"testing"
 
 	"github.com/labstack/echo/v5"
+
+	"app.local/internal/kit/errs"
+	"app.local/internal/modules/user/domain"
 )
 
 func TestWeChatRegistry_OnlyEnabledEntries(t *testing.T) {
@@ -65,6 +68,9 @@ func TestModule_MiddlewareFollowsTrustedIdentityConfig(t *testing.T) {
 		if errors.As(err, &he) {
 			return he.Code
 		}
+		if be, ok := errs.As(err); ok && be.Kind == errs.KindUnauthorized {
+			return http.StatusUnauthorized
+		}
 		return rec.Code
 	}
 	trusted := &Module{cfg: Config{TrustedIdentityHeader: "X-Gateway-User"}}
@@ -78,4 +84,34 @@ func TestModule_MiddlewareFollowsTrustedIdentityConfig(t *testing.T) {
 	if got := call(session.Middleware(), "u-1"); got != http.StatusUnauthorized {
 		t.Errorf("未配置时只认 bearer token，带网关 header = %d, want 401", got)
 	}
+}
+
+// 每个原生入口都要登记会话属于哪个客户端，否则登录时一律当作未知入口。
+func TestNativeClients_CoverEveryNativeEntry(t *testing.T) {
+	cred := WeChatAppCredentials{AppID: "appid", Secret: "secret"}
+	r := wechatRegistry(WeChatConfig{Web: cred, MP: cred, Mini: cred, App: cred})
+	for name, entry := range r {
+		if entry.Native == nil {
+			continue
+		}
+		if _, ok := nativeClients[name]; !ok {
+			t.Errorf("原生入口 %s 没有登记在 nativeClients 里", name)
+		}
+	}
+	for name := range nativeClients {
+		if _, ok := r.NativeEntry(name); !ok {
+			t.Errorf("nativeClients 登记了不存在的原生入口 %s", name)
+		}
+	}
+}
+
+// 配置启用了内置策略时，再登记自定义策略必须在启动时失败，不能悄悄覆盖。
+func TestSetSessionPolicy_ConflictsWithConfiguredPolicy(t *testing.T) {
+	m := New(Deps{Config: Config{JWTSigningKey: "k", JWTKeyID: "kid", SessionSlotLimit: 1}})
+	defer func() {
+		if recover() == nil {
+			t.Error("配置启用内置策略后 SetSessionPolicy 应 panic")
+		}
+	}()
+	m.SetSessionPolicy(domain.NewSlotLimit(2))
 }

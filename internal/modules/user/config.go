@@ -22,8 +22,11 @@ type Config struct {
 	CookieDeliveryOrigin []string      `yaml:"cookie_delivery_origins"`
 	PublicBaseURL        string        `yaml:"public_base_url"`
 	// TrustedIdentityHeader 非空时，前台鉴权改为信任网关透传的用户 ID header（见 Module.Middleware）。
-	TrustedIdentityHeader string       `yaml:"trusted_identity_header"`
-	WeChat                WeChatConfig `yaml:"wechat"`
+	TrustedIdentityHeader string `yaml:"trusted_identity_header"`
+	// SessionSlotLimit > 0 时启用内置会话策略 domain.SlotLimit：同一类设备最多保留这么多个会话，新登录顶掉最久没用的；
+	// 0 表示不启用。
+	SessionSlotLimit int32        `yaml:"session_slot_limit"`
+	WeChat           WeChatConfig `yaml:"wechat"`
 }
 
 type WeChatConfig struct {
@@ -78,6 +81,7 @@ func LoadConfig(src *config.Source) (Config, error) {
 		{"USER_ACCESS_TOKEN_TTL", &cfg.AccessTokenTTL},
 		{"USER_REFRESH_GRACE_PERIOD", &cfg.RefreshGracePeriod},
 		{"USER_REAUTH_WINDOW", &cfg.ReauthWindow},
+		{"USER_SESSION_SLOT_LIMIT", &cfg.SessionSlotLimit},
 	} {
 		if err := src.Env(item.name, item.out); err != nil {
 			return Config{}, fmt.Errorf("user config: %w", err)
@@ -114,6 +118,9 @@ func (c Config) Validate() error {
 			return fmt.Errorf("user config: %s must be > 0, got %s", name, d)
 		}
 	}
+	if c.SessionSlotLimit < 0 {
+		return fmt.Errorf("user config: USER_SESSION_SLOT_LIMIT must be >= 0, got %d", c.SessionSlotLimit)
+	}
 	for _, app := range []struct {
 		name string
 		cred WeChatAppCredentials
@@ -145,6 +152,7 @@ func (c Config) Redacted() map[string]any {
 		"public_base_url":         c.PublicBaseURL,
 		"cookie_delivery_origins": c.CookieDeliveryOrigin,
 		"trusted_identity_header": c.TrustedIdentityHeader,
+		"session_slot_limit":      c.SessionSlotLimit,
 		"wechat_web_app_id":       c.WeChat.Web.AppID,
 		"wechat_mp_app_id":        c.WeChat.MP.AppID,
 		"wechat_mini_app_id":      c.WeChat.Mini.AppID,

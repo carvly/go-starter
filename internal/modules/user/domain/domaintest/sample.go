@@ -63,7 +63,10 @@ func ValidSession() *domain.Session {
 	return &domain.Session{
 		ID:               uuid.NewV7().String(),
 		UserID:           uuid.NewV7().String(),
-		Client:           "web",
+		Client:           domain.ClientAndroid,
+		ClientVersion:    "1.0." + strconv.FormatInt(n, 10),
+		ClientOS:         "android",
+		DeviceClass:      domain.DeviceClassPhone,
 		AMR:              []string{domain.ProviderWeChat},
 		LoginIdentityID:  &idn,
 		AuthTime:         now,

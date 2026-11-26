@@ -66,7 +66,7 @@ func (f *Repository) TouchLogin(_ context.Context, id string) (*domain.User, err
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	cur, ok := f.byID[id]
-	if !ok {
+	if !ok || cur.Status != domain.UserStatusActive {
 		return nil, domain.ErrNotFound
 	}
 	next := *cur
@@ -167,7 +167,7 @@ func (f *Repository) Enable(_ context.Context, id string) (*domain.User, error) 
 	return new(next), nil
 }
 
-// Disable 只改状态：内存 fake 没有会话，吊销会话由 Postgres 的集成测试覆盖。
+// Disable 只改状态，吊销会话由 Service 执行。
 func (f *Repository) Disable(_ context.Context, id string) (*domain.User, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

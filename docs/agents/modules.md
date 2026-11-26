@@ -201,6 +201,11 @@ postgres 的未导出内容、不能循环 import），`internal/archtest` 只�
 模块对外只暴露 `Service` 或显式的窄能力（如 `user.Module.Middleware()`），
 Repository 不是任何公开字段。
 
+模块给组合根的登记方法（如 user 的 `AddDataCleaner`、`SetSessionPolicy`）在全部模块构造完成后，用独立一行调用，
+不带条件分支：`make remove-modules` 按行删除模块在 `modules.go` 里的引用（`tools/starter/modules_go.go`），多行的
+`if` 删不干净。要按配置开关的能力由模块按自己的配置装配（如 `USER_SESSION_SLOT_LIMIT` 在 `user.New` 里启用内置
+会话策略），组合根不读模块的配置。
+
 ## 拆成独立部署的服务：前置条件
 
 现在是模块化单体，默认不拆。前台（`httpapi/`）和后台（`adminapi/`）共用同一个模块的 Service，只分

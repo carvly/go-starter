@@ -15,28 +15,28 @@ import (
 
 // Defines values for IdentityProvider.
 const (
-	Apple  IdentityProvider = "apple"
-	Email  IdentityProvider = "email"
-	Github IdentityProvider = "github"
-	Google IdentityProvider = "google"
-	Phone  IdentityProvider = "phone"
-	Wechat IdentityProvider = "wechat"
+	IdentityProviderApple  IdentityProvider = "apple"
+	IdentityProviderEmail  IdentityProvider = "email"
+	IdentityProviderGithub IdentityProvider = "github"
+	IdentityProviderGoogle IdentityProvider = "google"
+	IdentityProviderPhone  IdentityProvider = "phone"
+	IdentityProviderWechat IdentityProvider = "wechat"
 )
 
 // Valid indicates whether the value is a known member of the IdentityProvider enum.
 func (e IdentityProvider) Valid() bool {
 	switch e {
-	case Apple:
+	case IdentityProviderApple:
 		return true
-	case Email:
+	case IdentityProviderEmail:
 		return true
-	case Github:
+	case IdentityProviderGithub:
 		return true
-	case Google:
+	case IdentityProviderGoogle:
 		return true
-	case Phone:
+	case IdentityProviderPhone:
 		return true
-	case Wechat:
+	case IdentityProviderWechat:
 		return true
 	default:
 		return false
@@ -45,19 +45,43 @@ func (e IdentityProvider) Valid() bool {
 
 // Defines values for UserSessionClient.
 const (
-	App         UserSessionClient = "app"
-	Miniprogram UserSessionClient = "miniprogram"
-	Web         UserSessionClient = "web"
+	Android           UserSessionClient = "android"
+	Harmonyos         UserSessionClient = "harmonyos"
+	Ios               UserSessionClient = "ios"
+	Web               UserSessionClient = "web"
+	WechatMiniprogram UserSessionClient = "wechat-miniprogram"
 )
 
 // Valid indicates whether the value is a known member of the UserSessionClient enum.
 func (e UserSessionClient) Valid() bool {
 	switch e {
-	case App:
+	case Android:
 		return true
-	case Miniprogram:
+	case Harmonyos:
+		return true
+	case Ios:
 		return true
 	case Web:
+		return true
+	case WechatMiniprogram:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for UserSessionDeviceClass.
+const (
+	UserSessionDeviceClassPhone  UserSessionDeviceClass = "phone"
+	UserSessionDeviceClassTablet UserSessionDeviceClass = "tablet"
+)
+
+// Valid indicates whether the value is a known member of the UserSessionDeviceClass enum.
+func (e UserSessionDeviceClass) Valid() bool {
+	switch e {
+	case UserSessionDeviceClassPhone:
+		return true
+	case UserSessionDeviceClassTablet:
 		return true
 	default:
 		return false
@@ -111,7 +135,7 @@ func (e ListUsersParamsSort) Valid() bool {
 
 // Error defines model for Error.
 type Error struct {
-	// Code 机器可读的错误码，取值由各模块 domain/errors.go 定义。
+	// Code 机器可读的错误码，取值由各模块 domain/errors.go（检查请求本身的由接入包的 errors.go）定义。
 	//
 	// Examples: permission_denied
 	Code string `json:"code"`
@@ -189,18 +213,30 @@ type UserPage struct {
 // UserSession defines model for UserSession.
 type UserSession struct {
 	// Client 客户端类型
-	Client     UserSessionClient `json:"client"`
-	CreatedAt  time.Time         `json:"created_at"`
-	DeviceName string            `json:"device_name"`
-	ExpiresAt  time.Time         `json:"expires_at"`
-	Id         string            `json:"id"`
-	Ip         string            `json:"ip"`
-	LastUsedAt time.Time         `json:"last_used_at"`
-	UserAgent  string            `json:"user_agent"`
+	Client UserSessionClient `json:"client"`
+
+	// ClientOs 小程序宿主所在的系统；没有上报时不返回
+	ClientOs *string `json:"client_os,omitempty"`
+
+	// ClientVersion 客户端没有上报时不返回
+	ClientVersion *string   `json:"client_version,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+
+	// DeviceClass 设备形态（只有 App 登录有）
+	DeviceClass *UserSessionDeviceClass `json:"device_class,omitempty"`
+	DeviceName  string                  `json:"device_name"`
+	ExpiresAt   time.Time               `json:"expires_at"`
+	Id          string                  `json:"id"`
+	Ip          string                  `json:"ip"`
+	LastUsedAt  time.Time               `json:"last_used_at"`
+	UserAgent   string                  `json:"user_agent"`
 }
 
 // UserSessionClient 客户端类型
 type UserSessionClient string
+
+// UserSessionDeviceClass 设备形态（只有 App 登录有）
+type UserSessionDeviceClass string
 
 // UserSessionList defines model for UserSessionList.
 type UserSessionList struct {

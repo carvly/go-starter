@@ -33,7 +33,7 @@ func wechatIdentity(subject string) domain.ExternalIdentity {
 
 func TestResolveLogin_NewIdentityCreatesUser(t *testing.T) {
 	svc, fakes := newAccountService()
-	tokens, err := svc.Login(t.Context(), "miniprogram", "dev", "127.0.0.1", "test-agent", wechatIdentity("u1"))
+	tokens, err := svc.Login(t.Context(), domain.LoginClient{Client: domain.ClientWeChatMiniprogram, DeviceName: "dev", IP: "127.0.0.1", UserAgent: "test-agent"}, wechatIdentity("u1"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +47,7 @@ func TestResolveLogin_NewIdentityCreatesUser(t *testing.T) {
 	if user.DisplayName != "微信昵称" || user.Status != domain.UserStatusActive {
 		t.Errorf("user = %+v", user)
 	}
-	if user.SignupClient != "miniprogram" || user.LastLoginAt.IsZero() {
+	if user.SignupClient != domain.ClientWeChatMiniprogram || user.LastLoginAt.IsZero() {
 		t.Errorf("注册客户端或最近登录时间未写入：%+v", user)
 	}
 	idns, err := fakes.Identities.ListByUser(t.Context(), user.ID)
@@ -69,7 +69,7 @@ func TestResolveLogin_FallbackNickname(t *testing.T) {
 	svc, fakes := newAccountService()
 	ext := wechatIdentity("u-empty")
 	ext.Name = "   " // 空白昵称回退兜底值
-	if _, err := svc.Login(t.Context(), "miniprogram", "", "127.0.0.1", "", ext); err != nil {
+	if _, err := svc.Login(t.Context(), domain.LoginClient{Client: domain.ClientWeChatMiniprogram, IP: "127.0.0.1"}, ext); err != nil {
 		t.Fatal(err)
 	}
 	users := fakes.Users.UsersList()
@@ -89,7 +89,7 @@ func TestResolveLogin_LongNicknameTruncated(t *testing.T) {
 	svc, fakes := newAccountService()
 	ext := wechatIdentity("u-long")
 	ext.Name = strings.Repeat("长", 100)
-	if _, err := svc.Login(t.Context(), "miniprogram", "", "127.0.0.1", "", ext); err != nil {
+	if _, err := svc.Login(t.Context(), domain.LoginClient{Client: domain.ClientWeChatMiniprogram, IP: "127.0.0.1"}, ext); err != nil {
 		t.Fatal(err)
 	}
 	for _, user := range fakes.Users.UsersList() {
@@ -101,14 +101,14 @@ func TestResolveLogin_LongNicknameTruncated(t *testing.T) {
 
 func TestResolveLogin_ExistingIdentitySameAccount(t *testing.T) {
 	svc, fakes := newAccountService()
-	first, err := svc.Login(t.Context(), "miniprogram", "", "127.0.0.1", "", wechatIdentity("u2"))
+	first, err := svc.Login(t.Context(), domain.LoginClient{Client: domain.ClientWeChatMiniprogram, IP: "127.0.0.1"}, wechatIdentity("u2"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	// 同一 unionid 从另一个入口进来：不建号，更新 openid。
 	ext := wechatIdentity("u2")
 	ext.WeChatAppID, ext.WeChatOpenID = "app-appid", "openid-app-u2"
-	second, err := svc.Login(t.Context(), "app", "", "127.0.0.1", "", ext)
+	second, err := svc.Login(t.Context(), domain.LoginClient{Client: domain.ClientAndroid, IP: "127.0.0.1"}, ext)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,20 +125,20 @@ func TestResolveLogin_ExistingIdentitySameAccount(t *testing.T) {
 
 func TestResolveLogin_DisabledAccountRejected(t *testing.T) {
 	svc, _ := newAccountService()
-	tokens, err := svc.Login(t.Context(), "miniprogram", "", "127.0.0.1", "", wechatIdentity("u3"))
+	tokens, err := svc.Login(t.Context(), domain.LoginClient{Client: domain.ClientWeChatMiniprogram, IP: "127.0.0.1"}, wechatIdentity("u3"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := svc.Disable(t.Context(), tokens.Session.UserID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.Login(t.Context(), "miniprogram", "", "127.0.0.1", "", wechatIdentity("u3")); !errors.Is(err, domain.ErrAccountUnavailable) {
+	if _, err := svc.Login(t.Context(), domain.LoginClient{Client: domain.ClientWeChatMiniprogram, IP: "127.0.0.1"}, wechatIdentity("u3")); !errors.Is(err, domain.ErrAccountUnavailable) {
 		t.Errorf("停用后登录 error = %v, want ErrAccountUnavailable", err)
 	}
 	// 换个入口也不行了。
 	ext := wechatIdentity("u3")
 	ext.WeChatAppID = "web-appid"
-	if _, err := svc.Login(t.Context(), "web", "", "127.0.0.1", "", ext); !errors.Is(err, domain.ErrAccountUnavailable) {
+	if _, err := svc.Login(t.Context(), domain.LoginClient{Client: domain.ClientWeb, IP: "127.0.0.1"}, ext); !errors.Is(err, domain.ErrAccountUnavailable) {
 		t.Errorf("停用后换入口登录 error = %v, want ErrAccountUnavailable", err)
 	}
 }
@@ -146,14 +146,14 @@ func TestResolveLogin_DisabledAccountRejected(t *testing.T) {
 func TestResolveBind_Branches(t *testing.T) {
 	// 当前会话属于 A。
 	svcA, fakesA := newAccountService()
-	tokensA, err := svcA.Login(t.Context(), "miniprogram", "", "127.0.0.1", "", wechatIdentity("bind-a"))
+	tokensA, err := svcA.Login(t.Context(), domain.LoginClient{Client: domain.ClientWeChatMiniprogram, IP: "127.0.0.1"}, wechatIdentity("bind-a"))
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	t.Run("换成另一个 unionid：替换、吊销旧会话、当前会话改指向、旧 openid 清空", func(t *testing.T) {
 		// A 的另一个会话（用旧微信登录）。
-		other, err := svcA.Login(t.Context(), "app", "", "127.0.0.1", "", wechatIdentity("bind-a"))
+		other, err := svcA.Login(t.Context(), domain.LoginClient{Client: domain.ClientAndroid, IP: "127.0.0.1"}, wechatIdentity("bind-a"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -182,7 +182,7 @@ func TestResolveBind_Branches(t *testing.T) {
 
 	t.Run("绑定已被其它账号占用的 unionid：拒绝", func(t *testing.T) {
 		// 同一个 service：账号 B 先登录占住 bind-b，A 再绑它。
-		if _, err := svcA.Login(t.Context(), "miniprogram", "", "127.0.0.1", "", wechatIdentity("bind-b")); err != nil {
+		if _, err := svcA.Login(t.Context(), domain.LoginClient{Client: domain.ClientWeChatMiniprogram, IP: "127.0.0.1"}, wechatIdentity("bind-b")); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := svcA.BindIdentity(t.Context(), tokensA.Session.ID, wechatIdentity("bind-b")); !errors.Is(err, domain.ErrAlreadyBound) {
@@ -192,7 +192,7 @@ func TestResolveBind_Branches(t *testing.T) {
 
 	t.Run("重复绑定同一个 unionid：幂等，不换行", func(t *testing.T) {
 		svcC, fakesC := newAccountService()
-		tokens, err := svcC.Login(t.Context(), "miniprogram", "", "127.0.0.1", "", wechatIdentity("bind-c"))
+		tokens, err := svcC.Login(t.Context(), domain.LoginClient{Client: domain.ClientWeChatMiniprogram, IP: "127.0.0.1"}, wechatIdentity("bind-c"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -209,7 +209,7 @@ func TestResolveBind_Branches(t *testing.T) {
 
 func TestReauthenticate(t *testing.T) {
 	svc, fakes := newAccountService()
-	tokens, err := svc.Login(t.Context(), "miniprogram", "", "127.0.0.1", "", wechatIdentity("re-1"))
+	tokens, err := svc.Login(t.Context(), domain.LoginClient{Client: domain.ClientWeChatMiniprogram, IP: "127.0.0.1"}, wechatIdentity("re-1"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,7 +234,7 @@ func TestReauthenticate(t *testing.T) {
 
 func TestUnbindIdentity(t *testing.T) {
 	svc, fakes := newAccountService()
-	tokens, err := svc.Login(t.Context(), "miniprogram", "", "127.0.0.1", "", wechatIdentity("un-1"))
+	tokens, err := svc.Login(t.Context(), domain.LoginClient{Client: domain.ClientWeChatMiniprogram, IP: "127.0.0.1"}, wechatIdentity("un-1"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,7 +251,7 @@ func TestUnbindIdentity(t *testing.T) {
 
 func TestDeleteMe(t *testing.T) {
 	svc, fakes := newAccountService()
-	tokens, err := svc.Login(t.Context(), "miniprogram", "", "127.0.0.1", "", wechatIdentity("del-1"))
+	tokens, err := svc.Login(t.Context(), domain.LoginClient{Client: domain.ClientWeChatMiniprogram, IP: "127.0.0.1"}, wechatIdentity("del-1"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -279,7 +279,7 @@ func TestDeleteMe(t *testing.T) {
 	}
 
 	// 注销后用同一个微信登录是新账号。
-	tokens2, err := svc.Login(t.Context(), "miniprogram", "", "127.0.0.1", "", wechatIdentity("del-1"))
+	tokens2, err := svc.Login(t.Context(), domain.LoginClient{Client: domain.ClientWeChatMiniprogram, IP: "127.0.0.1"}, wechatIdentity("del-1"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -290,7 +290,7 @@ func TestDeleteMe(t *testing.T) {
 
 func TestRefresh_Logout(t *testing.T) {
 	svc, fakes := newAccountService()
-	tokens, err := svc.Login(t.Context(), "web", "", "127.0.0.1", "", wechatIdentity("rf-1"))
+	tokens, err := svc.Login(t.Context(), domain.LoginClient{Client: domain.ClientWeb, IP: "127.0.0.1"}, wechatIdentity("rf-1"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -320,7 +320,7 @@ func TestRefresh_Logout(t *testing.T) {
 	}
 
 	// 登出示意：摘要匹配当前值才吊销。
-	tokens2, err := svc.Login(t.Context(), "web", "", "127.0.0.1", "", wechatIdentity("rf-2"))
+	tokens2, err := svc.Login(t.Context(), domain.LoginClient{Client: domain.ClientWeb, IP: "127.0.0.1"}, wechatIdentity("rf-2"))
 	if err != nil {
 		t.Fatal(err)
 	}

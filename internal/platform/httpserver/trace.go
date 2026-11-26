@@ -24,6 +24,8 @@ const tracerName = "app.local/internal/platform/httpserver"
 // newRequestMiddleware 是每个请求的入口，排在中间件链最外层：
 //   - 建 server span（健康检查和 /metrics 不建），trace_id 写进响应头 X-Trace-Id；
 //   - 在 ctx 里绑定 logger 和关联字段 method、route，日志的 trace_id 由根 Handler 从 span 取；
+//   - 客户端自报的 X-Client-*、X-Installation-Id（ParseClientInfo）只进日志字段，不进 span 属性（客户端可任意取值），
+//     经 trace_id 与 trace 关联；
 //   - 只有 trustProxy 为真（在网关后）才接受上游的 traceparent 和 X-Trace-Id，否则一律新生成：
 //     直连时客户端能指定 trace_id，把自己的请求混进别人的日志。
 //
@@ -38,6 +40,7 @@ func newRequestMiddleware(tp trace.TracerProvider, trustProxy bool, log *slog.Lo
 				ctx = upstreamTrace(ctx, req.Header)
 			}
 			method, route := methodName(req.Method), c.Path()
+			client := ParseClientInfo(req.Header)
 
 			var span trace.Span
 			if !healthEndpointSkipper(c) {
@@ -51,6 +54,7 @@ func newRequestMiddleware(tp trace.TracerProvider, trustProxy bool, log *slog.Lo
 			}
 
 			ctx = logctx.WithRoute(logctx.WithLogger(ctx, log), method, route)
+			ctx = logctx.WithClient(ctx, client.Platform, client.OS, client.Version, client.InstallationID)
 			c.SetRequest(req.WithContext(ctx))
 			c.SetLogger(logctx.From(ctx))
 			if span == nil {

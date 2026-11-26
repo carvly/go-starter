@@ -53,9 +53,10 @@ func TestOAuthStateRepository_Contract(t *testing.T) {
 }
 
 // 停用要在同一个事务里吊销该用户全部未吊销的会话：已吊销的不改吊销时间，别人的会话不受影响。
-func TestRepository_DisableRevokesSessions(t *testing.T) {
+func TestService_DisableRevokesSessions(t *testing.T) {
 	handle := pgtest.Handle(t, user.Migrations)
 	repo := postgres.NewRepository(handle)
+	svc := newPostgresService(handle, nil)
 	ctx := t.Context()
 	u, other, disabled := domaintest.ValidUser(), domaintest.ValidUser(), domaintest.ValidUser()
 	u.Status, other.Status, disabled.Status = domain.UserStatusActive, domain.UserStatusActive, domain.UserStatusDisabled
@@ -89,11 +90,11 @@ func TestRepository_DisableRevokesSessions(t *testing.T) {
 	insert(others, other.ID, false)
 	insert(blocked, disabled.ID, false)
 
-	if _, err := repo.Disable(ctx, u.ID); err != nil {
+	if _, err := svc.Disable(ctx, u.ID); err != nil {
 		t.Fatal(err)
 	}
 	// 条件不满足（已经停用）时什么都不改，会话也不吊销。
-	if _, err := repo.Disable(ctx, disabled.ID); !errors.Is(err, domain.ErrInvalidState) {
+	if _, err := svc.Disable(ctx, disabled.ID); !errors.Is(err, domain.ErrInvalidState) {
 		t.Fatalf("停用已停用的用户 error = %v, want ErrInvalidState", err)
 	}
 	rows, err := db.Query(ctx, `SELECT id::text, revoked_at IS NOT NULL, revoked_at IS NOT DISTINCT FROM '2026-01-01T00:00:00Z' FROM user_sessions`)

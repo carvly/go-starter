@@ -315,6 +315,102 @@ func RunSessionRepositoryContract(t *testing.T, newRepo func(t *testing.T) (doma
 		}
 	})
 
+	t.Run("Create 后读回客户端信息，新会话没有被顶掉", func(t *testing.T) {
+		repo, createUser := newRepo(t)
+		v := ValidSession()
+		createUser(t, v.UserID)
+		if err := repo.Create(ctx, v); err != nil {
+			t.Fatal(err)
+		}
+		got, err := repo.Get(ctx, v.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Client != v.Client || got.ClientVersion != v.ClientVersion || got.ClientOS != v.ClientOS ||
+			got.DeviceClass != v.DeviceClass || got.DeviceName != v.DeviceName || got.Replaced {
+			t.Errorf("读回 = %+v, want 与写入一致且 Replaced=false", got)
+		}
+	})
+
+	t.Run("ListActiveByUser 与 GetValid 同一有效条件，按 last_used_at、id 升序", func(t *testing.T) {
+		repo, createUser := newRepo(t)
+		userID := uuid.NewV7().String()
+		createUser(t, userID)
+		base := time.Now().Add(-time.Hour).Truncate(time.Microsecond)
+		mk := func(mut func(*domain.Session)) *domain.Session {
+			v := ValidSession()
+			v.UserID = userID
+			mut(v)
+			if err := repo.Create(ctx, v); err != nil {
+				t.Fatal(err)
+			}
+			return v
+		}
+		newer := mk(func(v *domain.Session) { v.LastUsedAt = base.Add(2 * time.Minute) })
+		older := mk(func(v *domain.Session) { v.LastUsedAt = base.Add(time.Minute) })
+		mk(func(v *domain.Session) { v.ExpiresAt = time.Now().Add(-time.Minute) })
+		mk(func(v *domain.Session) { v.LastUsedAt = time.Now().Add(-8 * 24 * time.Hour) })
+		revoked := mk(func(*domain.Session) {})
+		if err := repo.Revoke(ctx, revoked.ID); err != nil {
+			t.Fatal(err)
+		}
+		other := ValidSession()
+		createUser(t, other.UserID)
+		if err := repo.Create(ctx, other); err != nil {
+			t.Fatal(err)
+		}
+
+		got, err := repo.ListActiveByUser(ctx, userID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids := make([]string, 0, len(got))
+		for _, v := range got {
+			ids = append(ids, v.ID)
+			if _, err := repo.GetValid(ctx, v.ID); err != nil {
+				t.Errorf("列出的会话 %s 被 GetValid 拒绝：%v", v.ID, err)
+			}
+		}
+		if want := []string{older.ID, newer.ID}; !slices.Equal(ids, want) {
+			t.Errorf("ListActiveByUser = %v, want %v（只含有效会话，最久没用的在前）", ids, want)
+		}
+	})
+
+	t.Run("RevokeReplaced 只吊销该账号未吊销的会话并标记顶掉", func(t *testing.T) {
+		repo, createUser := newRepo(t)
+		mine, alreadyRevoked, others := ValidSession(), ValidSession(), ValidSession()
+		alreadyRevoked.UserID = mine.UserID
+		createUser(t, mine.UserID)
+		createUser(t, others.UserID)
+		for _, v := range []*domain.Session{mine, alreadyRevoked, others} {
+			if err := repo.Create(ctx, v); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := repo.Revoke(ctx, alreadyRevoked.ID); err != nil {
+			t.Fatal(err)
+		}
+		if err := repo.RevokeReplaced(ctx, mine.UserID, []string{mine.ID, alreadyRevoked.ID, others.ID}); err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range []struct {
+			id                string
+			revoked, replaced bool
+		}{
+			{mine.ID, true, true},
+			{alreadyRevoked.ID, true, false},
+			{others.ID, false, false},
+		} {
+			got, err := repo.Get(ctx, c.id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (got.RevokedAt != nil) != c.revoked || got.Replaced != c.replaced {
+				t.Errorf("%s: revoked=%v replaced=%v, want %v %v", c.id, got.RevokedAt != nil, got.Replaced, c.revoked, c.replaced)
+			}
+		}
+	})
+
 	t.Run("PageByUser 只列未吊销的，按创建倒序分页，不漏不重", func(t *testing.T) {
 		repo, createUser := newRepo(t)
 		userID := uuid.NewV7().String()

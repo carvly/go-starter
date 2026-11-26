@@ -17,8 +17,9 @@
   手写加了用户详情页的登录方式列表（`listUserIdentities`）、会话列表（`listUserSessions`，
   都是 `user:read`）和踢下线（`kickUserSession`，`user:kick`）。账号只能经登录创建，
   后台不能新建或编辑。停用
-  （`Repository.Disable`）在同一条语句里改状态并吊销该用户全部未吊销的会话
-  （`user_sessions`），会话校验每次都查库，停用立即生效。
+  （`Service.Disable`）在同一个事务里先改状态、再用另一条语句吊销该用户全部未吊销的会话
+  （`user_sessions`），会话校验每次都查库，停用立即生效。吊销不能和改状态写进同一条语句（数据修改的 CTE），
+  原因见 `docs/agents/transactions.md` 的例子。
 - **登录方式**：`user_identities` 表，`(provider, subject)` 唯一定位，每种 provider
   每个账号最多一个，绑定新的就替换旧的。现在只有微信（`subject` 是 unionid）；
   邮箱/手机号只能由验证码流程创建，第三方声明的邮箱不落库也不成为登录方式。微信各入口的 openid 单独存 `wechat_openids`（支付、模板消息用），
@@ -50,12 +51,24 @@
 - **会话**：每次登录建一行 `user_sessions`。access token 是 HS256 的 JWT，header 带
   `kid`，claims 只有 iss/aud/sub/sid/iat/exp，有效期 `USER_ACCESS_TOKEN_TTL`（默认
   15 分钟）；**每个请求按 `sid` 查会话行**（带 `users.status`）：吊销、过期、空闲超时、
-  账号停用立即生效，查询失败也拒绝，不加缓存。refresh token 按 `refresh_family` 定位，
+  账号停用立即生效，不加缓存；查询失败也拒绝，但返回 500 而不是 401（客户端只在 401 时清令牌重新登录）。
+  refresh token 按 `refresh_family` 定位，
   轮换后上一代在 `USER_REFRESH_GRACE_PERIOD`（默认 10 秒）内仍可用；`refresh_family`
   对得上、随机串既不是当前值也不是宽限期内的上一代，而会话仍然有效时，视为泄露、吊销
   整个会话（`domain/session.go` 的 `Refresh`）；客户端必须串行刷新。refresh token 按
   请求 `Origin` 交付：名单内（`USER_COOKIE_DELIVERY_ORIGINS`）只进 httpOnly +
   SameSite=Strict cookie（Path `/v1/auth/session`），名单外（App、小程序）走响应体。
+- **会话记录的客户端**：`user_sessions.client` 和 `users.signup_client` 的宿主和形态由**登录入口**决定：浏览器兑换
+  固定是 `web`；小程序、小游戏各有自己的 AppID，入口就决定了客户端（`wechat-miniprogram`），不看请求头；微信移动应用在
+  Android、iOS、鸿蒙上共用一组 AppID，系统取客户端自报的请求头 `X-Client-Platform`（可以伪造，只用于展示），必须是
+  `android`、`ios`、`harmonyos`，
+  并且请求体必须带 `device_class`（`phone`、`tablet`），否则返回 400 `client_platform_invalid` /
+  `device_class_invalid`。这两项在校验凭证（`verifyNative`）之前检查，授权码和 nonce 还没用掉，客户端修正后可以
+  直接重试。入口与客户端的对应登记在 `providers.go` 的 `nativeClients`（`TestNativeClients_CoverEveryNativeEntry`
+  检查每个原生入口都登记了）。`client_version`、`client_os`（小程序宿主所在的系统）取自请求头，格式不合法就不记，
+  只用于展示（"我的会话"、后台会话列表）。
+- **登录与停用、注销并发**：`ResolveLogin` 以 `Repository.TouchLogin` 的条件 UPDATE（`status = 'active'`）判断
+  账号状态，不先读再判断；这条 UPDATE 同时锁住用户行，同一账号的并发登录在登录事务里排队。
 - **登录接口的防护**：`/v1/auth/*` 的操作（发起授权、回调、兑换、原生登录、签发原生 nonce、刷新、登出）在
   全局限流之外再按 IP 限流，每秒 5 次（`module.go` 的常量 `authRatePerSecond`，不可配置），配了
   Redis 时多实例共享计数；带请求体的操作只接受 `application/json`，表单等其它类型返回
@@ -123,6 +136,37 @@
 - **协议不标准**：出错时 HTTP 200 + `errcode`，所以手写实现，不用聚合多家登录的库。
 - 部署相关的约束（IP 白名单、回调域名）见 `docs/agents/deploy-ci.md` 的"前台登录的部署约束"。
 
+## 会话策略（按设备类别互踢）
+
+登录时可以按策略顶掉同一账号的旧会话，如"每类设备只能登录一个"。默认不启用：不启用时登录不多查询；启用后登录多两到三次查询（事务前预查登录方式，事务里列有效会话，需要顶掉时再吊销）。
+不论是否启用，鉴权遇到失效的会话时都多查一次原始行，用来区分 `session_replaced` 和 `invalid_token`（只有验签通过的令牌
+才会走到这一步）。
+
+- **内置策略** `domain.SlotLimit`：配置 `USER_SESSION_SLOT_LIMIT=N`（正整数）启用，同一设备类别最多保留 N 个
+  会话，新登录顶掉 `last_used_at` 最早的（平手按 ID）；0 或留空不启用。设备类别（`domain.DeviceSlot`）：App 按
+  `device_class` 分 `phone`、`tablet`（不分系统），其余就是客户端本身（`web`、`wechat-miniprogram`）。改配置后
+  滚动重启生效；关闭后已经被顶掉的会话保持吊销，不恢复。
+- **自定义策略**：实现 `user.SessionPolicy`（如按会员等级限制设备数），写在组合根适配器 `internal/app/adapters_*.go`
+  里（模块之间不能互相导入），在 `modules.go` 用独立一行 `userM.SetSessionPolicy(...)` 登记。只能有一个策略：
+  同时配置了 `USER_SESSION_SLOT_LIMIT`，或重复登记，启动时 panic。
+- **两段式**：`Prepare` 在登录事务之前调用，可以读其它模块（跨模块读不能放进事务，见 `docs/agents/modules.md`）；
+  它返回的 `Decide` 在事务里调用，拿不到 ctx 也就拿不到登录事务，约定只用参数和闭包里准备好的数据、不做 IO（调用时持有
+  用户行锁）。`Decide` 返回要吊销的
+  会话 ID，或返回错误拒绝这次登录。准备时按登录方式预查账号：查不到是首次登录，没有旧会话，不调用策略。
+- **执行归 Service**（`domain/login.go` 的 `admitSession`）：`ResolveLogin` 的 `TouchLogin` 已锁住用户行，事务里
+  列出的有效会话（`ListActiveByUser`，和 `GetValid` 同一有效条件）包含先提交的那次登录；`Decide` 返回的 ID 必须
+  都在其中，否则整次登录回滚；然后一条 SQL 吊销并标记 `replaced`。准备之后登录方式换了账号（并发的首次登录或换绑）
+  时返回 `login_failed`，客户端重试即可。
+- **被顶掉的设备**：鉴权返回 401 `session_replaced`；refresh 只在出示的令牌确实是这个会话的当前值或上一代时
+  返回 `session_replaced`，只知道 family 的人拿到的是 `invalid_token`，探测不出"账号在别处登录了"。被吊销的行
+  最多保留 7 天（快到绝对过期的会更早被清理），之后只返回 `invalid_token`。会话被顶掉后账号又被停用，鉴权仍返回
+  `session_replaced`，客户端同样是重新登录，登录时才会看到账号已停用。
+- **客户端约定**：收到 `session_replaced` 清掉令牌，提示"账号已在其它设备登录"，由用户确认后再登录，**不能自动
+  重新登录**：小程序常在启动时静默 `wx.login`，同一类别的两台设备会互相顶来顶去。只在本地没有令牌、且上次失效的
+  原因不是 `session_replaced` 时静默登录。
+- **信任边界**：`device_class` 是客户端自报的，把第二台手机报成 `tablet` 就能多登一台；互踢限制得住普通用户，
+  防不住刻意绕过，严格防账号共享要另做设备证明。Web 和小程序的类别由登录入口决定，不能伪造。
+
 ## 接入新的登录方式
 
 表结构、通用链路、"解析账号"、会话、解绑规则都不用改：
@@ -132,7 +176,9 @@
    在 `Exchange` / `VerifyNative` 里校验（OIDC 的 id_token 签名、iss/aud/exp/nonce 由 provider 校验），
    从 `ExchangeParams.Callback` 读自己专有的回调字段；带用 httptest 模拟对方响应的测试；
 2. `internal/modules/user/config.go` 加凭据和校验（按"能力和启用分开"：没配就不启用）；
-3. 在 user 的 `providers.go` 的注册表里登记；
+3. 在 user 的 `providers.go` 的注册表里登记；原生入口同时登记 `nativeClients`：有自己 AppID 的小程序、小游戏
+   填客户端（`<生态>-<形态>`，如 `douyin-minigame`），多个系统共用 AppID 的 App 填空；新的客户端取值同时加进
+   `domain` 的常量、`api/openapi.yaml` 的 `Session.client` 和 `api/admin.yaml` 的 `UserSessionClient`（带中文文案）；
 4. 在平台侧配置回调地址（指向 API 域名）；
 5. `api/admin.yaml` 的登录方式枚举（已预留 email、phone、github、google、apple）补上显示名，
    `make generate`。
@@ -166,7 +212,7 @@
 - 停用前台用户必须同时吊销会话，并且两者原子完成；注销、踢下线同理；
 - **吊销立即生效**：前台鉴权每个请求按 `sid` 查 `user_sessions`，不做 access token 主动
   吊销，也不缓存会话查询结果（缓存的"写后删"窗口会让吊销不成立）；查询失败必须拒绝
-  （fail closed）；
+  （fail closed），返回 500；
 - refresh token 只存随机串部分的摘要；family 对得上而随机串不对、会话仍有效时视为泄露，吊销
   整个会话；按 `refresh_family` 定位，只知道 `sid` 吊销不了别人的会话；
 - 浏览器授权流程的一次性 state + 绑定 cookie 防登录 CSRF：没有绑定 cookie、或 cookie 摘要

@@ -25,7 +25,11 @@ func NewSessionRepository(handle *dbtx.Handle, idleTimeout time.Duration) *Sessi
 	return &SessionRepository{handle: handle, idleTimeout: idleTimeout}
 }
 
-const sessionColumns = "id, user_id, client, amr, login_identity_id, auth_time, refresh_family, refresh_token_hash, previous_refresh_token_hash, rotated_at, device_name, ip, user_agent, created_at, updated_at, last_used_at, expires_at, revoked_at"
+const sessionColumns = "id, user_id, client, client_version, client_os, device_class, amr, login_identity_id, auth_time, refresh_family, refresh_token_hash, previous_refresh_token_hash, rotated_at, device_name, ip, user_agent, created_at, updated_at, last_used_at, expires_at, revoked_at, replaced"
+
+// validSessionCond 是"会话有效"的条件（未吊销、未绝对过期、未空闲超时），GetValid 和 ListActiveByUser 共用；
+// 表别名是 s，空闲超时是参数 $2。
+const validSessionCond = "s.revoked_at IS NULL AND s.expires_at > now() AND s.last_used_at > now() - $2::interval"
 
 // sessionJoinedColumns 是 JOIN users 后的限定列名（id/user_id/created_at/updated_at
 // 在两个表里都有，不限定会报列名歧义）。
@@ -33,21 +37,21 @@ var sessionJoinedColumns = "s." + strings.ReplaceAll(sessionColumns, ", ", ", s.
 
 func scanSession(row pgx.CollectableRow) (*domain.Session, error) {
 	var v domain.Session
-	err := row.Scan(&v.ID, &v.UserID, &v.Client, &v.AMR, &v.LoginIdentityID, &v.AuthTime,
-		&v.RefreshFamily, &v.RefreshTokenHash, &v.PreviousRefreshTokenHash, &v.RotatedAt,
-		&v.DeviceName, &v.IP, &v.UserAgent, &v.CreatedAt, &v.UpdatedAt, &v.LastUsedAt,
-		&v.ExpiresAt, &v.RevokedAt)
+	err := row.Scan(&v.ID, &v.UserID, &v.Client, &v.ClientVersion, &v.ClientOS, &v.DeviceClass, &v.AMR,
+		&v.LoginIdentityID, &v.AuthTime, &v.RefreshFamily, &v.RefreshTokenHash, &v.PreviousRefreshTokenHash,
+		&v.RotatedAt, &v.DeviceName, &v.IP, &v.UserAgent, &v.CreatedAt, &v.UpdatedAt, &v.LastUsedAt,
+		&v.ExpiresAt, &v.RevokedAt, &v.Replaced)
 	return &v, err
 }
 
 func (r *SessionRepository) Create(ctx context.Context, v *domain.Session) error {
 	_, err := r.handle.Resolve(ctx).Exec(ctx, `
-		INSERT INTO user_sessions (id, user_id, client, amr, login_identity_id, auth_time,
-			refresh_family, refresh_token_hash, device_name, ip, user_agent,
+		INSERT INTO user_sessions (id, user_id, client, client_version, client_os, device_class, amr,
+			login_identity_id, auth_time, refresh_family, refresh_token_hash, device_name, ip, user_agent,
 			created_at, updated_at, last_used_at, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now(), now(), $12, $13)`,
-		v.ID, v.UserID, v.Client, v.AMR, v.LoginIdentityID, v.AuthTime,
-		v.RefreshFamily, v.RefreshTokenHash, v.DeviceName, v.IP, v.UserAgent,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, now(), now(), $15, $16)`,
+		v.ID, v.UserID, v.Client, v.ClientVersion, v.ClientOS, v.DeviceClass, v.AMR,
+		v.LoginIdentityID, v.AuthTime, v.RefreshFamily, v.RefreshTokenHash, v.DeviceName, v.IP, v.UserAgent,
 		v.LastUsedAt, v.ExpiresAt)
 	if err != nil {
 		return fmt.Errorf("postgres: create session: %w", err)
@@ -61,9 +65,7 @@ func (r *SessionRepository) GetValid(ctx context.Context, sid string) (*domain.S
 	rows, err := r.handle.Resolve(ctx).Query(ctx, `
 		SELECT `+sessionJoinedColumns+`
 		FROM user_sessions s JOIN users u ON u.id = s.user_id
-		WHERE s.id = $1 AND s.revoked_at IS NULL
-		  AND s.expires_at > now() AND s.last_used_at > now() - $2::interval
-		  AND u.status = $3`, sid, r.idleTimeout, domain.UserStatusActive)
+		WHERE s.id = $1 AND `+validSessionCond+` AND u.status = $3`, sid, r.idleTimeout, domain.UserStatusActive)
 	if err != nil {
 		return nil, fmt.Errorf("postgres: get valid session: %w", err)
 	}
@@ -75,6 +77,31 @@ func (r *SessionRepository) GetValid(ctx context.Context, sid string) (*domain.S
 		return nil, fmt.Errorf("postgres: get valid session: %w", err)
 	}
 	return v, nil
+}
+
+func (r *SessionRepository) ListActiveByUser(ctx context.Context, userID string) ([]*domain.Session, error) {
+	rows, err := r.handle.Resolve(ctx).Query(ctx, `
+		SELECT `+sessionJoinedColumns+` FROM user_sessions s
+		WHERE s.user_id = $1 AND `+validSessionCond+`
+		ORDER BY s.last_used_at, s.id`, userID, r.idleTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: list active sessions: %w", err)
+	}
+	v, err := pgx.CollectRows(rows, scanSession)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: list active sessions: %w", err)
+	}
+	return v, nil
+}
+
+func (r *SessionRepository) RevokeReplaced(ctx context.Context, userID string, ids []string) error {
+	_, err := r.handle.Resolve(ctx).Exec(ctx, `
+		UPDATE user_sessions SET revoked_at = now(), replaced = true, updated_at = now()
+		WHERE user_id = $1 AND id = ANY($2::uuid[]) AND revoked_at IS NULL`, userID, ids)
+	if err != nil {
+		return fmt.Errorf("postgres: revoke replaced sessions: %w", err)
+	}
+	return nil
 }
 
 func (r *SessionRepository) GetByFamily(ctx context.Context, family string) (*domain.Session, error) {

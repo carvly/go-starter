@@ -194,7 +194,7 @@ type CreatedAccount struct {
 
 // Error defines model for Error.
 type Error struct {
-	// Code 机器可读的错误码，取值由各模块 domain/errors.go 定义。
+	// Code 机器可读的错误码，取值由各模块 domain/errors.go（检查请求本身的由接入包的 errors.go）定义。
 	//
 	// Examples: permission_denied
 	Code string `json:"code"`

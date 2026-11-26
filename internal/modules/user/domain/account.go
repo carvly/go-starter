@@ -73,8 +73,18 @@ func (s *Service) Get(ctx context.Context, id string) (*User, error) {
 }
 
 // Disable 在同一个事务里停用账号并吊销全部会话。
+// Disable 停用账号并吊销它全部的会话，两者在同一个事务里。吊销必须是改状态之后的另一条语句：改状态会等并发登录
+// 释放用户行锁，只有之后开始的语句才看得到那次登录刚提交的会话（同一条语句里的数据修改 CTE 用的是语句开始时的
+// 快照，会漏掉它，账号再启用时这个会话就复活了）。
 func (s *Service) Disable(ctx context.Context, id string) (*User, error) {
-	v, err := s.users.Disable(ctx, id)
+	var v *User
+	err := s.uow.Run(ctx, func(ctx context.Context) error {
+		var err error
+		if v, err = s.users.Disable(ctx, id); err != nil {
+			return err
+		}
+		return s.sessions.RevokeAllByUser(ctx, id)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("disable user: %w", err)
 	}
