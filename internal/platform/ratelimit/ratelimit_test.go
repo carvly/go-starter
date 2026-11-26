@@ -25,6 +25,9 @@ func TestRedisStore_SharesQuotaAcrossStoreInstances(t *testing.T) {
 	// 两个 store 模拟两个实例：额度必须共享，而不是各自 2 次。
 	a := ratelimit.NewStore(client, "test", limit, discardLogger())
 	b := ratelimit.NewStore(client, "test", limit, discardLogger())
+	for _, s := range []any{a, b} {
+		ratelimit.SetTimeout(s.(*ratelimit.RedisStore), time.Minute)
+	}
 
 	for i, s := range []interface{ Allow(string) (bool, error) }{a, b} {
 		if ok, err := s.Allow("1.2.3.4"); err != nil || !ok {

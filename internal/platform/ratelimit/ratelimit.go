@@ -51,6 +51,7 @@ func NewStore(client *goredis.Client, name string, limit Limit, logger *slog.Log
 		prefix:  "ratelimit:" + name + ":",
 		limit:   redis_rate.Limit{Rate: limit.Rate, Period: limit.Period, Burst: limit.Burst},
 		logger:  logger,
+		timeout: redisTimeout,
 	}
 }
 
@@ -61,6 +62,7 @@ type RedisStore struct {
 	prefix  string
 	limit   redis_rate.Limit
 	logger  *slog.Logger
+	timeout time.Duration
 }
 
 func (s *RedisStore) Allow(identifier string) (bool, error) {
@@ -72,7 +74,7 @@ func (s *RedisStore) AllowContext(c *echo.Context, identifier string) (bool, err
 }
 
 func (s *RedisStore) allow(ctx context.Context, identifier string) (bool, error) {
-	ctx, cancel := context.WithTimeout(ctx, redisTimeout)
+	ctx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
 	res, err := s.limiter.Allow(ctx, s.prefix+identifier, s.limit)
 	if err != nil {
