@@ -12,8 +12,8 @@ require (
 	github.com/golang-migrate/migrate/v4 v4.20.1
 	github.com/jackc/pgx/v5 v5.13.0
 	github.com/joho/godotenv v1.5.1
-	github.com/labstack/echo/v5 v5.4.6
-	github.com/oapi-codegen/runtime v1.9.0
+	github.com/labstack/echo/v5 v5.4.7
+	github.com/oapi-codegen/runtime v1.9.1
 	github.com/prometheus/client_golang v1.25.0
 	github.com/redis/go-redis/extra/redisotel/v9 v9.23.0
 	github.com/redis/go-redis/v9 v9.23.0
