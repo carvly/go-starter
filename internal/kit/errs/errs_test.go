@@ -55,8 +55,9 @@ func TestKind_String_NamesEveryKind(t *testing.T) {
 		errs.KindNotFound:        "not_found",
 		errs.KindConflict:        "conflict",
 		errs.KindTooManyRequests: "too_many_requests",
+		errs.KindUnavailable:     "unavailable",
 	}
-	for k := errs.KindInternal; k <= errs.KindTooManyRequests; k++ {
+	for k := errs.KindInternal; k <= errs.KindUnavailable; k++ {
 		if got := k.String(); got != want[k] {
 			t.Errorf("Kind(%d).String() = %q, want %q", k, got, want[k])
 		}

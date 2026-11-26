@@ -11,6 +11,7 @@ import (
 	"app.local/internal/kit/logctx"
 	"app.local/internal/modules/user/domain"
 	"app.local/internal/modules/user/httpapi/oapi"
+	"app.local/internal/platform/httpserver"
 	"app.local/internal/platform/oauth"
 )
 
@@ -136,7 +137,7 @@ func (h *Handler) startBoundFlow(c *echo.Context, provider string, intent domain
 	if !ok {
 		return errUnknownProvider(provider)
 	}
-	s, err := sessionBound(c)
+	s, err := httpserver.UserSessionFrom(c)
 	if err != nil {
 		return err
 	}

@@ -141,7 +141,9 @@ Warn `<4>`、Info `<6>`、Debug `<7>`），journald 据此设置优先级并去�
 - **每个端口一个 Registry，内容不重叠**：同一进程的多个端口各自被抓取，内容重复会让按服务求和算重。
   进程的 Registry（`metrics.NewRuntimeRegistry`，由 `NewInfra` 构造，挂在 `Infra.Metrics`）带 Go 运行时、进程指标、
   `service_info` 和业务自定义指标，由 api 的前台端口、worker 的内部端口（`HTTP_INTERNAL_ADDR`，默认 `:9090`）输出；
-  api 的后台端口用自己的 Registry（`metrics.NewRegistry`），只有 `service_info` 和后台的 HTTP 指标；
+  api 的后台端口用自己的 Registry（`metrics.NewRegistry`），只有 `service_info` 和后台的 HTTP 指标；api 的内部端口（网关
+  鉴权的会话校验，`HTTP_API_INTERNAL_ADDR`）不输出 `/metrics`，它的 HTTP 指标注册进 `Infra.Metrics`（`server="internal"`），
+  经前台端口输出；
 - **socket activation 时端口由轮流上线的实例共享**（见 [deploy-ci.md](deploy-ci.md) 的"裸机发布"）：`/metrics` 仍在前台、后台端口，
   抓到的是当时在线的实例。1、2 是同一个服务的前后两任，是一条连续的序列；交接的几秒里可能交替抓到新旧进程，新进程的计数器
   从 0 开始，按一次重置处理；
@@ -167,7 +169,7 @@ Warn `<4>`、Info `<6>`、Debug `<7>`），journald 据此设置优先级并去�
 http_server_request_duration_seconds{server, method, route, status}
 ```
 
-- `_count` 就是请求数，错误率按 `status` 算，不另设计数器；`server` 是 `api` 或 `admin`；
+- `_count` 就是请求数，错误率按 `status` 算，不另设计数器；`server` 是 `api`、`admin` 或 `internal`；
 - 中间件紧贴在请求入口之内（入口建好 span 之后）：被限流（429）、请求体超限（413）、panic（500）的请求都计入。handler 返回的错误由它交给
   `HTTPErrorHandler` 渲染，耗时包含写出错误响应的时间，`status` 是实际写出的状态码；Recover 原样再抛的
   `http.ErrAbortHandler` 按 500 计入后继续抛；`/healthz`、`/readyz`、`/metrics` 不计入；
@@ -184,6 +186,11 @@ http_server_request_duration_seconds{server, method, route, status}
   `sum(rate(http_server_request_duration_seconds_count{method="GET", route="/v1/me"}[5m]))`。没匹配上路由的
   请求 `route` 为空，扫描器的乱扫路径不会各占一条时间序列；
   `server_test.go` 的 `TestServer_MetricsRouteLabelIsRouteTemplate` 固定了这一点；
+- 网关鉴权的两个指标（[auth.md](auth.md) 的"网关鉴权"）：`user_gateway_auth_results_total{result}` 是校验端点的结果分布
+  （`ok`、`invalid_token`、`session_replaced`、`error`；成功和两种失效都是 HTTP 200，HTTP 指标分不开）；
+  `gateway_assertion_key_info{kid}` 是本进程已加载的断言公钥，轮换断言密钥时用它确认所有实例都有新 `kid`。网关侧的
+  "校验不可用"到不了 user 服务，看网关访问日志的 `auth` 字段（`anonymous`、`ok`、`invalid_token`、`session_replaced`、
+  `rate_limited`、`unavailable`，开了网关鉴权的项目的日志格式才有）；
 - 自定义指标同样不把 ID、查询参数、用户输入放进标签，注册进 `Infra.Metrics`（api 进程的在前台端口输出，后台模块的也一样，见上面"两种 Registry 的归属不同"）。"某个具体对象被访问了多少次"查日志，不进指标。
 
 ## tracing
@@ -205,6 +212,8 @@ http_server_request_duration_seconds{server, method, route, status}
 - 网关因连接错误把请求重试到另一个实例（`proxy_next_upstream`）时，两个实例收到同一个 `$trace_id`，同一条 trace 下
   会有两个根 span、`instance` 不同：这是同一个网关请求的两次尝试，不是执行了两遍。`trace_id` 的含义是"网关请求"，
   网关 access log 只有一行，`upstream` 字段列出两个实例；
+- 开了网关鉴权时，同一个 trace 下还有一个路由为 `/internal/auth/verify` 的根 span：那是网关为这个请求做的会话校验
+  （gateway_auth.lua 把 `$trace_id` 显式传给子请求，子请求自己的 `$request_id` 与父请求不同），不是重试。按路由区分；
 - 响应头 `X-Trace-Id` 写回当前 `trace_id`，前台 CORS 在 `ExposeHeaders` 里放行它，跨域的前端出错时能展示给用户、报给客服；
 - 需要持久化这个 ID 的适配器（后台操作日志）用 `httpserver.TraceID(ctx)` 取值，模块不 import otel；
 

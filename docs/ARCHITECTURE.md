@@ -198,7 +198,7 @@ testcontainers-go。显式构造函数注入，不用 wire/fx。
 | 能力 | 状态 |
 |---|---|
 | 模块化结构、架构测试、注册完整性测试、删除演练 | 已实现 |
-| 前台会话鉴权中间件（JWT 验签 + 按 sid 查会话）/ 网关信任 header、Argon2id（后台员工密码） | 已实现 |
+| 前台会话鉴权中间件（JWT 验签 + 按 sid 查会话）/ 网关鉴权（OpenResty 调校验端点换 ES256 身份断言）、Argon2id（后台员工密码） | 已实现 |
 | 前台登录与会话：微信四个入口、服务端会话、refresh 轮换、重新验证、绑定/解绑、注销 | 已实现；第三方登录的通用链路（PKCE、nonce、表单回调、原生 id_token）已就绪，手机号、邮箱、密码和 GitHub/Google/Apple 等 provider 未实现 |
 | 缓存工具（`RedisCache[T]` / `NoopCache[T]`，事务提交后删缓存） | 已提供，模块按需接入；singleflight 防击穿未实现，有热点时再加 |
 | 全局限流（Redis 共享 / 内存） | 已实现 |

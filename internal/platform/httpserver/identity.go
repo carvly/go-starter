@@ -14,17 +14,19 @@ import (
 // 而不是把另一类主体的 ID 当成自己的。
 const userSessionKey = "httpserver.user_session"
 
-// UserSession 是已鉴权的前台用户。字段只放鉴权中间件确实拿得到的信息：会话
-// 中间件填全部字段，网关信任 header 模式只有 UserID（RequireRecentAuth 因此
-// 直接拒绝）。
+// UserSession 是已鉴权的前台用户。会话中间件（user 模块）和网关身份中间件（NewGatewayIdentityMiddleware）
+// 都填全部字段。
 type UserSession struct {
 	UserID    string
 	SessionID string
 	AuthTime  time.Time
 	AMR       []string
+	// ReauthUntil 是最近验证的截止时间（AuthTime + 重新验证窗口），RequireRecentAuth 只比较它：
+	// 窗口长度只有 user 模块知道，拆出去的服务不需要这份配置。
+	ReauthUntil time.Time
 }
 
-// SetUserSession 由鉴权中间件在身份校验通过后调用。JWT 和网关信任 header 两种实现
+// SetUserSession 由鉴权中间件在身份校验通过后调用。会话中间件和网关身份中间件
 // 都写这同一个键，handler 不需要知道当前挂的是哪一种。
 func SetUserSession(c *echo.Context, s UserSession) {
 	c.Set(userSessionKey, s)

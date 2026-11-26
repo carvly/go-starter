@@ -7,11 +7,15 @@ import (
 	"testing"
 
 	"app.local/internal/config"
+	"app.local/internal/platform/crypto"
 )
+
+// testSigningKey 满足 JWT 密钥的最小长度（32 字节）。
+const testSigningKey = "test-signing-key-0123456789abcdef"
 
 func setAuthEnv(t *testing.T) {
 	t.Helper()
-	t.Setenv("JWT_SIGNING_KEY", "test-signing-key")
+	t.Setenv("JWT_SIGNING_KEY", testSigningKey)
 	t.Setenv("JWT_KEY_ID", "test-kid")
 	t.Setenv("USER_PUBLIC_BASE_URL", "https://api.example.com")
 	t.Setenv("WECHAT_WEB_APP_ID", "web-appid")
@@ -46,13 +50,37 @@ func TestLoadConfig_MissingRequired(t *testing.T) {
 
 func TestLoadConfig_JWTAdditionalKeys(t *testing.T) {
 	setAuthEnv(t)
-	t.Setenv("JWT_ADDITIONAL_KEYS", "old-1:secret-1, old-2:secret-2")
+	old1, old2 := strings.Repeat("1", 32), strings.Repeat("2", 32)
+	t.Setenv("JWT_ADDITIONAL_KEYS", "old-1:"+old1+", old-2:"+old2)
 	cfg, err := LoadConfig(config.NewSource())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.JWTAdditionalKeys) != 2 || cfg.JWTAdditionalKeys["old-1"] != "secret-1" {
+	if len(cfg.JWTAdditionalKeys) != 2 || cfg.JWTAdditionalKeys["old-1"] != old1 {
 		t.Errorf("JWTAdditionalKeys = %v", cfg.JWTAdditionalKeys)
+	}
+}
+
+// 弱密钥、与当前 kid 重名的旧密钥、写错格式的旧密钥都在启动时拒绝，错误写明变量名。
+func TestLoadConfig_RejectsUnsafeJWTKeys(t *testing.T) {
+	long := strings.Repeat("k", 32)
+	for name, env := range map[string]map[string]string{
+		"当前密钥太短":        {"JWT_SIGNING_KEY": "changeme"},
+		"旧密钥太短":         {"JWT_ADDITIONAL_KEYS": "old:short"},
+		"旧密钥与当前 kid 同名": {"JWT_ADDITIONAL_KEYS": "test-kid:" + long},
+		"旧密钥格式不对":       {"JWT_ADDITIONAL_KEYS": "old" + long},
+	} {
+		t.Run(name, func(t *testing.T) {
+			setAuthEnv(t)
+			var want string
+			for k, v := range env {
+				t.Setenv(k, v)
+				want = k
+			}
+			if _, err := LoadConfig(config.NewSource()); err == nil || !strings.Contains(err.Error(), want) {
+				t.Errorf("LoadConfig() error = %v, want 写明 %s", err, want)
+			}
+		})
 	}
 }
 
@@ -134,5 +162,53 @@ func TestLoadConfig_SessionSlotLimit(t *testing.T) {
 		if _, err := LoadConfig(config.NewSource()); err == nil || !strings.Contains(err.Error(), "USER_SESSION_SLOT_LIMIT") {
 			t.Errorf("USER_SESSION_SLOT_LIMIT=%q error = %v, want 指明配置项的错误", bad, err)
 		}
+	}
+}
+
+// 网关鉴权的启动校验：模式取值、gateway 模式要有公钥、签名私钥与 kid 成对、公钥清单里必须有签发方自己的公钥。
+func TestLoadConfig_GatewayChecks(t *testing.T) {
+	priv, pub, err := crypto.NewAssertionKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, otherPub, _ := crypto.NewAssertionKeyPair()
+	ok := map[string]map[string]string{
+		"默认 session":  {},
+		"gateway 有公钥": {"USER_AUTH_MODE": "gateway", "GATEWAY_ASSERTION_PUBLIC_KEYS": "k1:" + pub},
+		"签发方的公钥在清单里":  {"USER_ASSERTION_SIGNING_KEY": priv, "USER_ASSERTION_SIGNING_KID": "k1", "GATEWAY_ASSERTION_PUBLIC_KEYS": "k0:" + otherPub + ",k1:" + pub},
+	}
+	for name, env := range ok {
+		t.Run(name, func(t *testing.T) {
+			setAuthEnv(t)
+			for k, v := range env {
+				t.Setenv(k, v)
+			}
+			if _, err := LoadConfig(config.NewSource()); err != nil {
+				t.Errorf("LoadConfig() error = %v", err)
+			}
+		})
+	}
+	bad := map[string]struct {
+		env  map[string]string
+		want string
+	}{
+		"模式取值不对":       {map[string]string{"USER_AUTH_MODE": "trusted"}, "USER_AUTH_MODE"},
+		"gateway 没有公钥": {map[string]string{"USER_AUTH_MODE": "gateway"}, "GATEWAY_ASSERTION_PUBLIC_KEYS"},
+		"私钥缺 kid":      {map[string]string{"USER_ASSERTION_SIGNING_KEY": priv, "GATEWAY_ASSERTION_PUBLIC_KEYS": "k1:" + pub}, "USER_ASSERTION_SIGNING_KID"},
+		"私钥不合法":        {map[string]string{"USER_ASSERTION_SIGNING_KEY": "AAAA", "USER_ASSERTION_SIGNING_KID": "k1", "GATEWAY_ASSERTION_PUBLIC_KEYS": "k1:" + pub}, "USER_ASSERTION_SIGNING_KEY"},
+		"清单为空":         {map[string]string{"USER_ASSERTION_SIGNING_KEY": priv, "USER_ASSERTION_SIGNING_KID": "k1"}, "GATEWAY_ASSERTION_PUBLIC_KEYS"},
+		"清单里没有这个 kid":  {map[string]string{"USER_ASSERTION_SIGNING_KEY": priv, "USER_ASSERTION_SIGNING_KID": "k1", "GATEWAY_ASSERTION_PUBLIC_KEYS": "k0:" + pub}, "USER_ASSERTION_SIGNING_KID"},
+		"kid 对但公钥不匹配":  {map[string]string{"USER_ASSERTION_SIGNING_KEY": priv, "USER_ASSERTION_SIGNING_KID": "k1", "GATEWAY_ASSERTION_PUBLIC_KEYS": "k1:" + otherPub}, "USER_ASSERTION_SIGNING_KID"},
+	}
+	for name, tc := range bad {
+		t.Run(name, func(t *testing.T) {
+			setAuthEnv(t)
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			if _, err := LoadConfig(config.NewSource()); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("LoadConfig() error = %v, want 写明 %s", err, tc.want)
+			}
+		})
 	}
 }

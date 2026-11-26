@@ -37,7 +37,12 @@
 - 前台列表接口从 v1 起就带 cursor 分页（`cursor`/`limit` 参数，响应带 `next_cursor`），
   `limit` 默认 20；不在 1–100 内时回落到默认值 20（不是截到 100）。后台表格要页码和总数的
   列表用页码分页，见下文"后台接入面"；
-- `/healthz`、`/readyz` 是运维探针，不写进 spec；
+- `/healthz`、`/readyz` 是运维探针，不写进 spec；api 内部端口上的接口（`/internal/` 下，如网关的会话校验端点）同样不写：
+  它们是网关等基础设施和服务之间的接口，不是客户端契约（写进去会生成公开文档和前端类型，误导客户端；也用不上参数绑定和
+  校验）。模块用 `RegisterInternalHTTP` 注册，组合根在 `modules.go` 的 `internalRegistrars()` 列出，挂在
+  `httpserver.NewInternalAPI` 上：不走 CORS；按 IP 限流，与前台分开计数（网关在业务请求到达前台限流之前就调会话
+  校验，不限的话一个有效令牌就能让每个请求先查一次库）；照常记日志、指标（`server="internal"`）和 trace；前台端口上没有这些路由。契约写在对应的文档里（会话校验端点见 auth.md 的
+  "网关鉴权"），由测试逐条覆盖；
 - schema 字段用 `examples: [...]` 写示例值（3.1 起 `example` 已废弃），Redoc 的请求、
   响应示例和"Copy for LLM"都用它，oapi-codegen 只把它生成成注释；tag 用 `summary`
   写侧边栏显示的中文名，`name` 仍是模块的 include-tags 键，不能改；
@@ -59,7 +64,8 @@
 
 - 业务错误在各模块 `domain/errors.go` 里用 `errs.New(kind, code, message)` 定义
   （`internal/kit/errs`），Kind 决定状态码：Invalid 400、Unauthorized 401、
-  Forbidden 403、NotFound 404、Conflict 409、TooManyRequests 429。`errors.Is` 仍按指针相等判断。
+  Forbidden 403、NotFound 404、Conflict 409、TooManyRequests 429、Unavailable 503（服务端暂时无法完成，客户端稍后
+  重试，如网关鉴权下的 `auth_unavailable`）。`errors.Is` 仍按指针相等判断。
 - 检查 HTTP 请求本身（某个请求头、请求体字段缺失或取值不对）、需要稳定错误码让客户端分支处理的错误，定义在接入包
   （`httpapi/`、`adminapi/`）里，同样用 `errs.New`，文案写明要改的请求头或字段名，放在接入包的 `errors.go`，如
   `internal/modules/user/httpapi/errors.go`。domain 不知道请求头和字段名，它的错误文案也不提它们；字段约束能写进 spec 的仍用
@@ -133,8 +139,8 @@
 ## 中间件顺序
 
 全局链固定为：请求入口 → 指标 → Recover → BodyLimit → CORS → Secure → 全局限流 →
-Timeout（`internal/platform/httpserver/server.go` 的 `newServer`，前台和
-后台共用，后台没有 CORS）。鉴权是操作级中间件，由模块挂载；user 还给自己的操作挂了按 IP
+Timeout（`internal/platform/httpserver/server.go` 的 `newServer`，前台、
+后台和 api 的内部端口共用；后台、内部端口没有 CORS，三者的限流各自计数）。鉴权是操作级中间件，由模块挂载；user 还给自己的操作挂了按 IP
 的限流和只接受 JSON 请求体的中间件，见 [user.md](../../internal/modules/user/docs/user.md) 的"登录接口的防护"。
 
 - 请求入口（`trace.go` 的 `newRequestMiddleware`）在最外层：建 server span、写响应头 `X-Trace-Id`、在 ctx 里绑定 logger 和
@@ -196,8 +202,14 @@ Timeout（`internal/platform/httpserver/server.go` 的 `newServer`，前台和
   （`api/openapi.yaml` 的 `components/parameters`），handler 从生成的参数读取后经 `Sanitized` 检查，不经 `context.Value`；
 - 原生登录的 App 入口用 `X-Client-Platform` 区分系统，缺失或不是 `android`、`ios`、`harmonyos` 时返回 400，见
   [user.md](../../internal/modules/user/docs/user.md) 的"会话记录的客户端"。这个值落库后仍然是自报的，只用于展示；
-- 客户端约定：不发 `traceparent`、`X-Trace-Id`、`X-User-ID`、`X-Forwarded-For`；出错时记下响应头 `X-Trace-Id`，反馈问题
-  时提供；只在 401 时清掉令牌重新登录，5xx 保留令牌按网络错误处理；
+- 客户端约定：不发 `traceparent`、`X-Trace-Id`、`X-Auth-Assertion`、`X-Auth-Status`、`X-Forwarded-For`（网关清掉或覆盖）；出错时记下响应头 `X-Trace-Id`，反馈问题
+  时提供。令牌按状态码和 `code` 处理：
+  - 业务接口返回 401 `invalid_token`：用 refresh token 刷新一次，成功后重试原请求。access token 到期、服务端紧急
+    更换签名密钥都走这条，用户无感；同时收到多个 401 时只发一次刷新，其余请求等它的结果；
+  - 刷新接口返回 401 `invalid_token`：清掉令牌，重新登录（可以静默登录）；
+  - 任何接口返回 401 `session_replaced`：清掉令牌，提示后由用户确认再登录，不刷新、不自动登录（见
+    [user.md](../../internal/modules/user/docs/user.md) 的"会话策略"）；
+  - 5xx 保留令牌，按网络错误处理：服务端故障不会把用户登出；
 - 安装 ID 和 `user_id` 一起进日志（不进 trace，见 [observability.md](observability.md) 的"tracing"），是可关联到个人的
   信息：业务项目的隐私政策要披露"为排查问题记录应用安装标识"和日志的保留期；用户注销后数据库里的数据会清理，日志里的
   记录保留到过期。

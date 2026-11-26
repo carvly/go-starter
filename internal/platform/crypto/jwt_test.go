@@ -67,6 +67,22 @@ func TestTokenIssuer_UnknownKeyID_Rejected(t *testing.T) {
 	}
 }
 
+// 签发的 token 一定带 kid；没有 kid 的不按当前密钥放行。
+func TestKeyFunc_MissingKeyID_Rejected(t *testing.T) {
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, crypto.AccessClaims{
+		SID:              "sid",
+		RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))},
+	})
+	tokenStr, err := token.SignedString([]byte("current-secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyFunc := crypto.KeyFunc("kid-current", []byte("current-secret"), nil)
+	if _, err := jwt.ParseWithClaims(tokenStr, &crypto.AccessClaims{}, keyFunc); err == nil {
+		t.Fatal("ParseWithClaims() error = nil, want 没有 kid 的 token 被拒绝")
+	}
+}
+
 func TestTokenIssuer_ExpiredToken_Rejected(t *testing.T) {
 	issuer := crypto.NewTokenIssuer("secret", "kid-1")
 	tokenStr, err := issuer.Issue("u", "sid", time.Now().Add(-time.Minute)) // 已过期

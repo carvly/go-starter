@@ -208,6 +208,48 @@ func newServer(d common) (*echo.Echo, *prometheus.Registry, error) {
 	return e, registry, nil
 }
 
+// InternalPrefix 是内部接口的路径前缀：只挂在内部端口上，前台端口没有这些路由。
+const InternalPrefix = "/internal"
+
+// InternalDeps 是 api 内部端口的依赖。
+type InternalDeps struct {
+	Logger *slog.Logger
+	HTTP   config.HTTPConfig
+	// RateLimitStore 是内部端口按 IP 限流的计数存储，与前台的分开计数（一次带令牌的业务请求在两边各计一次，不会扣两次
+	// 同一份额度）；为 nil 时用进程内存。
+	RateLimitStore middleware.RateLimiterStore
+	// Routes 由各模块的 RegisterInternalHTTP 组成，挂在 InternalPrefix 下。
+	Routes []func(g *echo.Group)
+	// Metrics 是这个端口的 HTTP 指标注册进去的 Registry。内部端口不输出 /metrics：组合根传进程的 Registry，
+	// 指标经前台端口输出，用 server="internal" 标签区分。
+	Metrics *prometheus.Registry
+	Tracer  trace.TracerProvider
+}
+
+// NewInternalAPI 构造 api 的内部端口：网关等基础设施调用的接口（如会话校验），不面向客户端、不进 spec。
+// 中间件链与前台相同（请求日志、指标、trace、Recover、BodyLimit、按 IP 的限流、Timeout），只是不挂 CORS（浏览器不会
+// 访问）。限流不能省：网关在业务请求到达前台限流之前就调会话校验，不限的话拿一个有效令牌刷请求，每个请求都会先查一次
+// 库。IP 取自网关转来的 X-Forwarded-For（HTTP_TRUSTED_PROXY），与前台按同一个客户端计数、各用各的额度。
+func NewInternalAPI(deps InternalDeps) (*echo.Echo, error) {
+	e, _, err := newServer(common{
+		Logger:         deps.Logger,
+		HTTP:           deps.HTTP,
+		RateLimitStore: deps.RateLimitStore,
+		Name:           "internal",
+		Metrics:        deps.Metrics,
+		Tracer:         deps.Tracer,
+	})
+	if err != nil {
+		return nil, err
+	}
+	g := e.Group(InternalPrefix)
+	for _, register := range deps.Routes {
+		register(g)
+	}
+	RegisterHealthz(e)
+	return e, nil
+}
+
 // NewInternal 构造 worker 用的内部 server：只有 /healthz 和 /metrics，
 // 绑在不对外发布的内部端口上。registry 为 nil 时 /metrics 输出空内容。
 func NewInternal(log *slog.Logger, registry *prometheus.Registry) *echo.Echo {

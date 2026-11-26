@@ -6,9 +6,11 @@ Description={{name}} api listening sockets
 
 [Socket]
 # 进程按地址认领用途（systemd 219 没有 FileDescriptorName=），顺序无关；地址与 {{conf_dir}}/app.env 的 HTTP_ADDR、
-# HTTP_ADMIN_ADDR 一致（render.sh 一并生成）。
+# HTTP_ADMIN_ADDR、HTTP_API_INTERNAL_ADDR 一致（render.sh 一并生成）。
 ListenStream=127.0.0.1:{{api_port}}
 @admin ListenStream=127.0.0.1:{{admin_port}}
+@gateway # 内部端口（网关的会话校验，render.sh 给了 --internal-port 时才有），地址与 HTTP_API_INTERNAL_ADDR 一致。
+@gateway ListenStream=127.0.0.1:{{internal_port}}
 # 219 默认 128；实际上限还受 net.core.somaxconn 限制（sysctl/90-somaxconn.conf）。
 Backlog=4096
 # 219 要求 socket 有对应的服务。只在所有实例都停止后有连接进来时才会被拉起（兜底），交接期间不会触发。

@@ -51,13 +51,17 @@
 - **会话**：每次登录建一行 `user_sessions`。access token 是 HS256 的 JWT，header 带
   `kid`，claims 只有 iss/aud/sub/sid/iat/exp，有效期 `USER_ACCESS_TOKEN_TTL`（默认
   15 分钟）；**每个请求按 `sid` 查会话行**（带 `users.status`）：吊销、过期、空闲超时、
-  账号停用立即生效，不加缓存；查询失败也拒绝，但返回 500 而不是 401（客户端只在 401 时清令牌重新登录）。
+  账号停用立即生效，不加缓存；查询失败也拒绝，但返回 500 而不是 401（客户端只在 401 时清令牌，见 http.md 的"客户端约定"）。
   refresh token 按 `refresh_family` 定位，
   轮换后上一代在 `USER_REFRESH_GRACE_PERIOD`（默认 10 秒）内仍可用；`refresh_family`
   对得上、随机串既不是当前值也不是宽限期内的上一代，而会话仍然有效时，视为泄露、吊销
   整个会话（`domain/session.go` 的 `Refresh`）；客户端必须串行刷新。refresh token 按
   请求 `Origin` 交付：名单内（`USER_COOKIE_DELIVERY_ORIGINS`）只进 httpOnly +
   SameSite=Strict cookie（Path `/v1/auth/session`），名单外（App、小程序）走响应体。
+- **两种前台鉴权**（`USER_AUTH_MODE`，选择在 `module.go` 的 `Middleware()`）：默认 `session` 由本模块的会话中间件按
+  access token 查会话；`gateway` 时网关调本模块挂在 api 内部端口上的校验端点（`httpapi/verify.go`，`RegisterInternalHTTP`）
+  换身份断言，后端用 platform 的网关身份中间件验证。两种方式查会话用同一段代码（`httpapi/middleware.go` 的
+  `sessionAuth`），见 `docs/agents/auth.md` 的"网关鉴权"。
 - **会话记录的客户端**：`user_sessions.client` 和 `users.signup_client` 的宿主和形态由**登录入口**决定：浏览器兑换
   固定是 `web`；小程序、小游戏各有自己的 AppID，入口就决定了客户端（`wechat-miniprogram`），不看请求头；微信移动应用在
   Android、iOS、鸿蒙上共用一组 AppID，系统取客户端自报的请求头 `X-Client-Platform`（可以伪造，只用于展示），必须是

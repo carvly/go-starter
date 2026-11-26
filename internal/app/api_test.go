@@ -97,3 +97,39 @@ func TestServerDeps_ProcessRegistryOnExactlyOnePort(t *testing.T) {
 		t.Error("后台端口应使用自己的 Registry，不能再输出 Infra.Metrics")
 	}
 }
+
+// 内部端口：配置了 HTTP_API_INTERNAL_ADDR 且有模块注册内部接口时才启动（删除了提供内部接口的模块时不启动）；它的 HTTP
+// 指标注册进进程的 Registry（server="internal"），与前台的同名指标共存。socket activation 时 socket 有无与是否启动一致。
+func TestAPIComponents_InternalPort(t *testing.T) {
+	in := newZeroInfra()
+	in.Metrics = metrics.NewRuntimeRegistry(process.New("api", "test"))
+	in.Config.HTTP.APIInternalAddr = "127.0.0.1:0"
+	mods := buildModules(in, testModuleConfigs(t))
+	hasRoutes := len(mods.internalRegistrars()) > 0
+	lns := &apiListeners{front: testListener(t)}
+	want := []string{"api"}
+	if hasRoutes {
+		lns.internal = testListener(t)
+		want = append(want, "internal")
+	}
+	cs, err := apiComponents(in, mods, lns)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := componentNames(cs); !slices.Equal(got, want) {
+		t.Errorf("components = %v, want %v", got, want)
+	}
+
+	// socket activation：socket 有无与"是否启动"不一致时启动失败。
+	in = newZeroInfra()
+	in.Config.HTTP.SocketActivation = true
+	in.Config.HTTP.APIInternalAddr = "127.0.0.1:8082"
+	mismatched := &apiListeners{front: testListener(t)}
+	if !hasRoutes {
+		mismatched.internal = testListener(t)
+	}
+	if _, err := apiComponents(in, buildModules(in, testModuleConfigs(t)), mismatched); err == nil ||
+		!strings.Contains(err.Error(), "internal") {
+		t.Errorf("内部端口的 socket 与是否启动不一致：err = %v", err)
+	}
+}

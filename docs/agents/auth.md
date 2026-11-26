@@ -23,22 +23,88 @@
 
 ## 前台鉴权：两种模式，二选一
 
-- **默认：会话中间件**（`internal/modules/user/httpapi/middleware.go` 的
-  `NewSessionMiddleware`）：验签（HS256 + `kid` 轮换，旧密钥放 `JWT_ADDITIONAL_KEYS`）
-  → 校验 iss/aud/exp → 按 `sid` 查会话。吊销立即生效，† 操作拿得到 `auth_time`。没带令牌、验签失败、会话失效返回
-  401 `invalid_token`，会话被同类设备的新登录顶掉返回 401 `session_replaced`（见 user.md 的"会话策略"）；查会话的
-  数据库查询失败也拒绝，但返回 500：客户端只在 401 时清掉令牌重新登录，服务端故障不会把用户登出；
-- **网关信任 header**（`trusted_identity_middleware.go`）：部署在已经校验过身份的
-  网关后面时用。这个模式下 `UserSession` 只有 `UserID`，没有服务端会话：依赖会话的操作（† 操作、绑定、
-  重新验证）一律返回 403 `session_unavailable`（fail closed），不返回 `recent_auth_required`，客户端不会
-  陷入"去重新验证、再失败"的循环。中间件本身不做任何签名校验，
-  前提是客户端无法绕过网关直连服务、网关会清掉客户端带来的同名 header。配错
-  不会报错，只会让鉴权悄悄失效。
+由 `USER_AUTH_MODE` 切换，选择逻辑在 `internal/modules/user/module.go` 的 `Middleware()`。两种实现都把完整身份
+（`UserID`、`SessionID`、`AuthTime`、`AMR`、`ReauthUntil`）写进 `httpserver.SetUserSession`（它同时把 `user_id` 写进
+日志关联字段），handler 用 `httpserver.UserSessionFrom(c)` 读，不需要知道当前是哪一种。
 
-由配置切换：`USER_TRUSTED_IDENTITY_HEADER` 留空用会话中间件，填上网关透传的 header 名（如
-`X-User-ID`）用信任 header 模式，选择逻辑在 `internal/modules/user/module.go` 的 `Middleware()`。两种实现都把
-身份写进 `httpserver.SetUserSession`（它同时把 `user_id` 写进日志关联字段），handler 用
-`httpserver.UserSessionFrom(c)` 读，不需要跟着改。
+- **`session`（默认）：会话中间件**（`internal/modules/user/httpapi/middleware.go` 的 `NewSessionMiddleware`）：
+  验签（HS256 + `kid` 轮换，旧密钥放 `JWT_ADDITIONAL_KEYS`，轮换步骤见 [deploy-ci.md](deploy-ci.md) 的"配置"）
+  → 校验 iss/aud/exp → 按 `sid` 查会话。吊销立即生效。没带令牌、验签失败、会话失效返回 401 `invalid_token`，会话被
+  同类设备的新登录顶掉返回 401 `session_replaced`（见 user.md 的"会话策略"）；查会话的数据库查询失败也拒绝，但返回
+  500：客户端只在 401 时清令牌（处理顺序见 [http.md](http.md) 的"客户端约定"），服务端故障不会把用户登出；
+- **`gateway`：网关鉴权**（见下一节）：OpenResty 调 user 服务的校验端点实时查会话，换成签名的身份断言转给后端；后端用
+  `internal/platform/httpserver/gateway_identity.go` 的 `NewGatewayIdentityMiddleware` 验证断言。按业务模块拆出独立部署
+  的服务、或网关后面有其它语言的后端时才需要；单体部署用 `session`。
+
+前台鉴权的错误（`invalid_token`、`session_replaced`、`recent_auth_required`、`auth_unavailable`）定义在
+`internal/kit/authn`：会话中间件（user 模块）和网关身份中间件（platform）返回同一个值，user 的 `domain/errors.go`
+引用它们。
+
+## 网关鉴权
+
+```
+客户端 ──Authorization──> OpenResty（location /v1/，access_by_lua：openresty/lua/gateway_auth.lua）
+  清掉客户端带来的 X-Auth-*；没带令牌 → 匿名放行（不发子请求）
+  读完请求体 → 子请求 /_auth ──> api 内部端口 GET /internal/auth/verify（只转发 Authorization、Host、X-Trace-Id、X-Forwarded-For）
+    200 + X-Auth-Assertion → 转给后端
+    200 + X-Auth-Status    → 转给后端（公开接口照常处理，需要登录的操作返回对应的 401）
+    429（校验端点限流）    → 原样回给客户端
+    其它（5xx、连不上）    → 网关直接 503 auth_unavailable
+后端：NewGatewayIdentityMiddleware 验证断言
+```
+
+**为什么网关不自己校验**：只验 JWT 签名做不到立即吊销；Lua 直接查 `user_sessions` 违反表归属、把 `Authenticate`
+的判断写成第二份；读 Redis 多一份要同步的数据。调用校验端点后，会话是否有效只由 `domain.Service.Authenticate`
+判断，会话中间件和校验端点共用 `httpapi/middleware.go` 的同一段代码；网关不持有任何密钥。
+
+**身份断言**（`internal/platform/crypto/assertion.go`）：ES256（P-256）JWT，header 带 `kid`，`aud` 为
+`gateway-assertion`（与 access token 不同，两种令牌不能互相冒用），30 秒有效，每个请求重新签发（不是缓存）。claims
+带 `sub`、`sid`、`auth_time`、`amr` 和 `reauth_until`（`auth_time + USER_REAUTH_WINDOW`，由签发方算好，验证方不需要
+知道窗口长度）。用 ES256：只有 user 服务持有私钥，验证方拿到的公钥不能签名，拆出去的服务被攻破也伪造不了断言。
+
+**校验端点的契约**（`internal/modules/user/httpapi/verify.go`，挂在 api 的内部端口上，不进 spec：它是网关和 user 服务
+之间的基础设施接口，不是客户端契约，和健康检查同类；Go 端单元测试逐行覆盖下表，Lua 与 Go 之间的约定由
+`deploy/baremetal/gatewaytest` 在真实 OpenResty 里验证）：
+
+| 情况 | 响应 |
+|---|---|
+| 会话有效 | 200，`X-Auth-Assertion: <断言>`，`Cache-Control: no-store` |
+| 没带令牌、令牌无效、会话失效 | 200，`X-Auth-Status: invalid_token` |
+| 会话被同类设备顶掉 | 200，`X-Auth-Status: session_replaced` |
+| 同一个客户端 IP 超过限流额度 | 429（网关原样回给客户端；内部端口按 IP 限流，与前台分开计数） |
+| 查会话失败、没有配置签名私钥 | 500（网关返回 503） |
+
+**后端中间件的结果**：
+
+| 请求 | 结果 |
+|---|---|
+| 断言有效 | 放行，写入完整身份 |
+| 没有断言，`X-Auth-Status: session_replaced` | 401 `session_replaced` |
+| 没有断言，其它 | 401 `invalid_token` |
+| 带了断言但验不过（`kid` 不认识、签名不对、过期、格式不符） | 503 `auth_unavailable` |
+
+网关先清掉客户端带来的断言，经网关到达的断言一定是 user 服务签的，验不过只能是服务端的问题（密钥轮换漏配、公钥贴错、
+时钟偏差）：返回 401 会让客户端刷新令牌、再失败就清令牌，把用户登出。错误日志里区分两类原因（`crypto.ErrAssertionInvalid`
+多半是公钥贴错或伪造，`ErrAssertionUnavailable` 多半是轮换漏配或时钟偏差）。`X-Auth-Status` 不签名：伪造它只能让
+自己被拒绝。客户端直连后端时自带的断言验不过签名，所以"客户端连不到后端""每个 location 都清头"只是纵深防御，配错
+不会变成任意冒充；但能直连的人可以制造 503 和错误日志，后端端口（前台、内部端口）都只能让网关连到。
+
+**配置**：
+
+| 配置 | 归属 | 说明 |
+|---|---|---|
+| `USER_AUTH_MODE` | user 模块 | `session` 或 `gateway`；`gateway` 时必须配 `GATEWAY_ASSERTION_PUBLIC_KEYS` |
+| `USER_ASSERTION_SIGNING_KEY`、`USER_ASSERTION_SIGNING_KID` | user 模块（只在 user 服务上） | 签名私钥（PKCS#8 DER 的 base64）和 `kid`，成对配置；P-256，且公钥清单里必须有它对应的公钥，否则启动失败 |
+| `GATEWAY_ASSERTION_PUBLIC_KEYS` | 基础设施（`internal/config`，只读环境变量） | `kid:公钥` 列表（SPKI DER 的 base64），所有验证方用同一份；拆出去、没有 user 模块的服务也能加载 |
+| `HTTP_API_INTERNAL_ADDR` | 基础设施 | api 内部端口的地址，为空时不启动 |
+
+签发方不把"由私钥推出的公钥"自动加进自己的验证集合：那样签发方自己验得过，清单里漏了这把公钥的其它服务却全部失败。
+所以 user 模块加载配置时读同一个 `GATEWAY_ASSERTION_PUBLIC_KEYS`，检查清单里有自己正在用的公钥。部署、切换顺序和
+密钥轮换见 [deploy-ci.md](deploy-ci.md) 的"网关鉴权"。
+
+**拆出去的服务**：没有 user 模块的代码，在自己的组合根里用 `httpserver.NewGatewayIdentityMiddleware(Infra 的验证器)`
+和 `httpserver.NewRequireRecentAuth()` 接线；生成器"恰好一个模块提供 `Middleware()`"的规则在拆分时随各服务的组合根
+一起重新设计（见 [modules.md](modules.md) 的"拆成独立部署的服务：前置条件"）。
 
 ## 给操作加鉴权
 
@@ -46,8 +112,8 @@
 `userM.Middleware()`（这样模块在 `modules.go` 里依赖 user，删除演练会连带处理）；在
 `httpapi/routes.go` 的 `OperationMiddlewares` 里按 operationId 挂上，spec 里对应操作去掉
 `security: []`。敏感操作（改绑登录方式、注销等，接口文档标 †）在 Auth 之后再挂
-`mw.RequireRecentAuth`，由组合根传入 `userM.RequireRecentAuth()`（窗口是
-`USER_REAUTH_WINDOW`）：
+`mw.RequireRecentAuth`，由组合根传入 `userM.RequireRecentAuth()`（`httpserver.NewRequireRecentAuth`：比较
+`UserSession.ReauthUntil`，窗口是 `USER_REAUTH_WINDOW`）：
 
 ```go
 // internal/modules/<m>/httpapi/routes.go

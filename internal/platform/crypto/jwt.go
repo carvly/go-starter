@@ -1,6 +1,7 @@
 package crypto
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -56,14 +57,17 @@ func (i *TokenIssuer) Issue(userID, sid string, expiresAt time.Time) (string, er
 }
 
 // KeyFunc 按 token header 的 kid 从"当前密钥 + 旧密钥集合"里选校验密钥，
-// 密钥轮换靠多把 kid 并存实现。
+// 密钥轮换靠多把 kid 并存实现。Issue 签发的 token 一定带 kid，没有 kid 的拒绝。
 func KeyFunc(currentKeyID string, currentKey []byte, additionalKeys map[string]string) jwt.Keyfunc {
 	return func(token *jwt.Token) (any, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
 		kid, _ := token.Header["kid"].(string)
-		if kid == "" || kid == currentKeyID {
+		if kid == "" {
+			return nil, errors.New("missing key id")
+		}
+		if kid == currentKeyID {
 			return currentKey, nil
 		}
 		if key, ok := additionalKeys[kid]; ok {

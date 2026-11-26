@@ -33,7 +33,7 @@ func TestMatchInherited(t *testing.T) {
 		t.Fatalf("顺序打乱时 got = %+v, err = %v", got, err)
 	}
 	if got, err := matchInherited([]net.Listener{front}, cfg); err != nil || got.admin != nil {
-		t.Fatalf("没有后台 socket 时 got = %+v, err = %v（有无后台由 checkAdminSocket 比对）", got, err)
+		t.Fatalf("没有后台 socket 时 got = %+v, err = %v（有无后台由 checkOptionalSockets 比对）", got, err)
 	}
 	noAdmin := config.HTTPConfig{Addr: cfg.Addr}
 	for _, tc := range []struct {
@@ -42,8 +42,8 @@ func TestMatchInherited(t *testing.T) {
 		cfg     config.HTTPConfig
 		wantErr string
 	}{
-		{"认领不了的地址", []net.Listener{front, testListener(t)}, cfg, "matches neither"},
-		{"没配后台地址却传了后台 socket", []net.Listener{front, admin}, noAdmin, "matches neither"},
+		{"认领不了的地址", []net.Listener{front, testListener(t)}, cfg, "matches none of"},
+		{"没配后台地址却传了后台 socket", []net.Listener{front, admin}, noAdmin, "matches none of"},
 		{"重复的地址", []net.Listener{front, front}, cfg, "twice"},
 		{"缺前台", []net.Listener{admin}, cfg, "no socket for HTTP_ADDR"},
 	} {
@@ -52,6 +52,36 @@ func TestMatchInherited(t *testing.T) {
 				t.Errorf("err = %v, want 含 %q", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+// 内部端口和后台一样按地址认领。
+func TestMatchInherited_InternalPort(t *testing.T) {
+	front, internal := testListener(t), testListener(t)
+	cfg := config.HTTPConfig{Addr: front.Addr().String(), APIInternalAddr: internal.Addr().String()}
+	got, err := matchInherited([]net.Listener{internal, front}, cfg)
+	if err != nil || got.front != front || got.internal != internal || got.admin != nil {
+		t.Fatalf("got = %+v, err = %v", got, err)
+	}
+}
+
+// 按需启动的端口：启用了却没有 socket、有 socket 却没启用，都在启动时失败并写明改法。
+func TestCheckOptionalSockets(t *testing.T) {
+	ln := testListener(t)
+	for _, tc := range []struct {
+		name    string
+		s       optionalSocket
+		wantErr string
+	}{
+		{"启用且有 socket", optionalSocket{"internal", "HTTP_API_INTERNAL_ADDR", true, ln}, ""},
+		{"没启用也没 socket", optionalSocket{"internal", "HTTP_API_INTERNAL_ADDR", false, nil}, ""},
+		{"启用了却没 socket", optionalSocket{"internal", "HTTP_API_INTERNAL_ADDR", true, nil}, "ListenStream=<HTTP_API_INTERNAL_ADDR>"},
+		{"有 socket 却没启用", optionalSocket{"admin", "HTTP_ADMIN_ADDR", false, ln}, "remove that ListenStream="},
+	} {
+		err := checkOptionalSockets(tc.s)
+		if (tc.wantErr == "") != (err == nil) || (err != nil && !strings.Contains(err.Error(), tc.wantErr)) {
+			t.Errorf("%s: err = %v, want %q", tc.name, err, tc.wantErr)
+		}
 	}
 }
 

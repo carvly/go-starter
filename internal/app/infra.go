@@ -16,6 +16,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"app.local/internal/config"
+	"app.local/internal/platform/crypto"
 	"app.local/internal/platform/dbtx"
 	"app.local/internal/platform/httpserver"
 	"app.local/internal/platform/logger"
@@ -52,6 +53,9 @@ type Infra struct {
 
 	// Pingers 是 /readyz 检查的依赖。
 	Pingers []httpserver.Pinger
+
+	// AssertionVerifier 验证网关转来的身份断言（GATEWAY_ASSERTION_PUBLIC_KEYS），没配时为 nil。
+	AssertionVerifier *crypto.AssertionVerifier
 }
 
 // newProcess 构造进程身份和根 logger，并设为 slog.Default()：没有绑定 request 的代码路径（比如 river
@@ -71,6 +75,10 @@ func NewInfra(ctx context.Context, cfg *config.Config, id process.Identity, log 
 	in := &Infra{
 		Config: cfg, Identity: id, Metrics: metrics.NewRuntimeRegistry(id), Logger: log, Tracer: tp,
 		shutdownTracing: func(ctx context.Context) error { return tracing.Shutdown(ctx, tp) },
+	}
+	if in.AssertionVerifier, err = newAssertionVerifier(cfg.Gateway, in.Metrics); err != nil {
+		in.Close(ctx)
+		return nil, fmt.Errorf("app: build infra: %w", err)
 	}
 	if err := in.connect(ctx); err != nil {
 		in.Close(ctx)
@@ -136,4 +144,27 @@ func (in *Infra) Close(ctx context.Context) {
 // 不记参数值。指标走 Prometheus：MeterProvider 不传时 otelpgx 退回 otel 全局 provider，所以显式传 noop。
 func newPgxTracer(tp trace.TracerProvider) *otelpgx.Tracer {
 	return otelpgx.NewTracer(otelpgx.WithTracerProvider(tp), otelpgx.WithMeterProvider(metricnoop.NewMeterProvider()))
+}
+
+// newAssertionVerifier 按 GATEWAY_ASSERTION_PUBLIC_KEYS 构造断言验证器，没配时返回 nil。每把已加载的公钥输出一条
+// gateway_assertion_key_info{kid}：轮换断言密钥时，切换签发方之前用它确认所有实例都已加载新公钥。
+func newAssertionVerifier(cfg config.GatewayConfig, reg prometheus.Registerer) (*crypto.AssertionVerifier, error) {
+	if len(cfg.AssertionPublicKeys) == 0 {
+		return nil, nil
+	}
+	v, err := crypto.NewAssertionVerifier(cfg.AssertionPublicKeys)
+	if err != nil {
+		return nil, fmt.Errorf("GATEWAY_ASSERTION_PUBLIC_KEYS: %w", err)
+	}
+	info := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "gateway_assertion_key_info",
+		Help: "Identity assertion public keys loaded by this process, one series per kid.",
+	}, []string{"kid"})
+	for _, kid := range v.KIDs() {
+		info.WithLabelValues(kid).Set(1)
+	}
+	if err := reg.Register(info); err != nil {
+		return nil, err
+	}
+	return v, nil
 }

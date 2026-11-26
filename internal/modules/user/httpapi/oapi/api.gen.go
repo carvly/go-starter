@@ -239,7 +239,8 @@ type Error struct {
 	// 业务错误的取值由各模块 domain/errors.go（检查请求本身的由接入包的 errors.go）
 	// 里的 errs.New 定义，这里不逐条枚举，避免 spec 和代码出现第二个需要同步的地方。另有两个通用取值：
 	// invalid_request（请求字段校验失败，message 列出 JSON 字段和规则）、
-	// http_error（请求格式错误、路径参数格式不对、请求体过大等框架层错误）。
+	// http_error（请求格式错误、路径参数格式不对、请求体过大等框架层错误）。网关鉴权部署下还有
+	// auth_unavailable（503，登录状态暂时无法校验，见 info.description）。
 	//
 	//
 	// Examples: product_not_found

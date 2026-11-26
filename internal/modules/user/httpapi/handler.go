@@ -305,7 +305,7 @@ func (h *Handler) BindIdentityNative(c *echo.Context, provider oapi.BindIdentity
 	if err := c.Validate(&body); err != nil {
 		return err
 	}
-	s, err := sessionBound(c)
+	s, err := httpserver.UserSessionFrom(c)
 	if err != nil {
 		return err
 	}
@@ -346,7 +346,7 @@ func (h *Handler) ReauthenticateNative(c *echo.Context, provider oapi.Reauthenti
 	if err := c.Validate(&body); err != nil {
 		return err
 	}
-	s, err := sessionBound(c)
+	s, err := httpserver.UserSessionFrom(c)
 	if err != nil {
 		return err
 	}

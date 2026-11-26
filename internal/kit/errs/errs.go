@@ -20,6 +20,8 @@ const (
 	// KindTooManyRequests 是需要等一段时间再试（如登录连续失败后的等待），用
 	// WithRetryAfter 带上剩余时间。
 	KindTooManyRequests
+	// KindUnavailable 是服务端暂时无法完成（依赖的服务不可用等），客户端稍后重试；不是请求本身的问题。
+	KindUnavailable
 )
 
 // String 是写进日志 error_kind 字段的名字，按类别检索和统计错误用。
@@ -39,6 +41,8 @@ func (k Kind) String() string {
 		return "conflict"
 	case KindTooManyRequests:
 		return "too_many_requests"
+	case KindUnavailable:
+		return "unavailable"
 	default:
 		return "unknown"
 	}

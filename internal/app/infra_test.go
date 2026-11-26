@@ -2,12 +2,14 @@ package app
 
 import (
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
 
 	"app.local/internal/config"
+	"app.local/internal/platform/crypto"
 	"app.local/internal/platform/process"
 )
 
@@ -34,7 +36,7 @@ func baseTestConfig() *config.Config {
 
 func testModuleConfigs(t *testing.T) moduleConfigs {
 	t.Helper()
-	t.Setenv("JWT_SIGNING_KEY", "test-signing-key")
+	t.Setenv("JWT_SIGNING_KEY", "test-signing-key-0123456789abcdef")
 	t.Setenv("JWT_KEY_ID", "test-kid")
 	t.Setenv("USER_PUBLIC_BASE_URL", "https://api.example.com")
 	configs, err := loadModuleConfigs(config.NewSource())
@@ -78,5 +80,53 @@ func TestNewInfra_WithRedis_RegistersPinger(t *testing.T) {
 	}
 	if err := in.Pingers[1].Ping(t.Context()); err != nil {
 		t.Errorf("Redis Pinger 应该能 Ping 通 miniredis: %v", err)
+	}
+}
+
+// 配了 GATEWAY_ASSERTION_PUBLIC_KEYS 时构造验证器，每个 kid 一条 gateway_assertion_key_info；没配时为 nil。
+func TestNewInfra_AssertionVerifier(t *testing.T) {
+	in, err := NewInfra(t.Context(), baseTestConfig(), process.New("api", "test"), discardLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	in.Close(t.Context())
+	if in.AssertionVerifier != nil {
+		t.Error("没配公钥时不应构造验证器")
+	}
+
+	_, pub, err := crypto.NewAssertionKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := baseTestConfig()
+	cfg.Gateway.AssertionPublicKeys = map[string]string{"k2": pub, "k1": pub}
+	in, err = NewInfra(t.Context(), cfg, process.New("api", "test"), discardLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer in.Close(t.Context())
+	if in.AssertionVerifier == nil {
+		t.Fatal("配了公钥时应构造验证器")
+	}
+	mfs, err := in.Metrics.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kids []string
+	for _, mf := range mfs {
+		if mf.GetName() == "gateway_assertion_key_info" {
+			for _, m := range mf.GetMetric() {
+				kids = append(kids, m.GetLabel()[0].GetValue())
+			}
+		}
+	}
+	if len(kids) != 2 {
+		t.Errorf("gateway_assertion_key_info kid = %v, want k1、k2", kids)
+	}
+
+	cfg.Gateway.AssertionPublicKeys = map[string]string{"k1": "AAAA"}
+	if _, err := NewInfra(t.Context(), cfg, process.New("api", "test"), discardLogger()); err == nil ||
+		!strings.Contains(err.Error(), "GATEWAY_ASSERTION_PUBLIC_KEYS") {
+		t.Errorf("公钥不合法时 err = %v", err)
 	}
 }

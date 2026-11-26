@@ -22,6 +22,17 @@
   需要填占位值才能启动，说明必需项定错了；
 - secrets 不进 git：JWT 签名密钥、轮换用的旧密钥和微信各应用的 AppID / Secret 只能来自环境变量
   （字段是 `yaml:"-"`）；
+- **JWT 签名密钥**（`JWT_SIGNING_KEY`、`JWT_KEY_ID`、`JWT_ADDITIONAL_KEYS`）：密钥至少 32 字节（`openssl rand -base64 32`），
+  `JWT_ADDITIONAL_KEYS` 是 `kid:密钥` 列表，只用于校验、不用于签发；不满足、格式不对或含有当前 `kid` 时拒绝启动
+  （`internal/modules/user/config.go` 的 `validateJWTKeys`）。只有 access token 受密钥影响，refresh token 存在库里，
+  换密钥不会让会话失效。
+  - **计划内轮换分三次发布**：滚动发布时两个实例轮流重启，先换签名密钥的实例签出的 token 会被还没重启的实例拒绝，
+    所以不能一步换完：
+    1. 新密钥加进 `JWT_ADDITIONAL_KEYS`，签名密钥不变，发布：所有实例先认识新 `kid`；
+    2. `JWT_SIGNING_KEY`、`JWT_KEY_ID` 换成新的，旧密钥挪进 `JWT_ADDITIONAL_KEYS`，发布；
+    3. 过了一个 `USER_ACCESS_TOKEN_TTL`（默认 15 分钟）再留些余量，从 `JWT_ADDITIONAL_KEYS` 删掉旧密钥，发布。
+  - **密钥泄露时一步换掉**，不保留旧密钥：已签发的 access token 立即失效，客户端按 [http.md](http.md) 的"客户端约定"
+    用 refresh token 换新的，用户不会被登出；
   数据库 DSN 和 Redis 密码技术上也能写进 `CONFIG_FILE`，但含密码的配置文件不能提交，
   生产环境用环境变量注入。`configs/.env.example` 只放占位符，本地用 `.env`（godotenv
   加载，不提交）；
@@ -74,8 +85,7 @@
   `WECHAT_*` 环境变量（见 `internal/modules/user/docs/user.md` 和 `configs/.env.example`）。其中
   `USER_PUBLIC_BASE_URL` 是必需项，缺了 api 和 worker 都起不来；`WECHAT_*` 四个入口按产品
   需要组合，每个入口的 `_APP_ID` / `_SECRET` 成对配置才启用，只配一半启动失败；其余 `USER_*`
-  时长有默认值，`USER_COOKIE_DELIVERY_ORIGINS`、`USER_TRUSTED_IDENTITY_HEADER`（网关信任 header 模式，见
-  auth.md 的"前台鉴权"）、`USER_SESSION_SLOT_LIMIT`（按设备类别互踢，默认不启用，见 user.md 的"会话策略"）可选。`HTTP_GLOBAL_RATE_LIMIT_PER_SECOND`、`HTTP_REQUEST_TIMEOUT`、
+  时长有默认值，`USER_COOKIE_DELIVERY_ORIGINS`、`USER_AUTH_MODE` 与断言密钥（网关鉴权，见下文"网关鉴权"）、`USER_SESSION_SLOT_LIMIT`（按设备类别互踢，默认不启用，见 user.md 的"会话策略"）可选。`HTTP_GLOBAL_RATE_LIMIT_PER_SECOND`、`HTTP_REQUEST_TIMEOUT`、
   `HTTP_BODY_LIMIT_BYTES` 必须为正数，否则启动失败；默认值只在 `internal/config` 一处。
   `USER_PUBLIC_BASE_URL` 和 `USER_COOKIE_DELIVERY_ORIGINS` 里的每一项都必须是规范的 origin
   （小写 `scheme://host[:port]`，不带默认端口和路径），否则启动失败。compose 在 `x-user-env` 里给了开发默认值（微信各入口默认不启用，
@@ -116,8 +126,8 @@
 - **平台侧的回调配置都指向 API 域名**：服务号"网页授权域名"填全域名、不带协议，域名需要备案并在根
   目录放校验文件；开放平台网站应用填授权回调域；网站应用的"业务域名"校验文件和授权回调域是两回事；
 - **网关的职责**：网关只做 TLS 终止、同源反代、`X-Forwarded-For`（配合 `HTTP_TRUSTED_PROXY=true`）、
-  粗粒度限流，转发前删掉客户端带来的 `X-User-ID`。不在网关里做登录和 JWT 校验：那样吊销要等 token
-  过期才生效，依赖会话的操作（† 操作、绑定、重新验证）也不可用，只会返回 `session_unavailable`（见 [auth.md](auth.md) 的"前台鉴权"）。
+  粗粒度限流。不在网关里做登录和 JWT 校验：那样吊销要等 token 过期才生效。开了网关鉴权时网关调 user 服务的校验端点
+  换身份断言，会话是否有效仍由 user 服务判断（见下文"网关鉴权"和 [auth.md](auth.md) 的"网关鉴权"）。
 
 ### 裸机发布
 
@@ -126,17 +136,18 @@
 经网关的请求不失败（崩溃那一刻在途的请求除外）。同一台机器可以部署多个项目。
 
 `deploy/baremetal/` 里的文件分两类。**每个项目一份**的是带占位符的模板，由 `deploy/baremetal/render.sh` 按项目名、端口、域名
-生成（不启用后台时省略 `--admin-port`、`--admin-domain`，后台相关的行全部去掉）：
+生成（不启用后台时省略 `--admin-port`、`--admin-domain`，后台相关的行全部去掉；`--internal-port` 启用网关鉴权，见下文
+"网关鉴权"）：
 
 ```bash
 deploy/baremetal/render.sh --name myshop --api-port 8080 --admin-port 8081 --worker-port 9090 \
     --api-domain api.myshop.com --admin-domain admin.myshop.com \
-    [--root /opt/myshop] [--conf-dir /etc/myshop]                    # 生成到 ./rendered-myshop，并打印安装命令
+    [--internal-port 8082] [--root /opt/myshop] [--conf-dir /etc/myshop]   # 生成到 ./rendered-myshop，并打印安装命令
 ```
 
 | 模板 | 生成 | 作用 |
 |---|---|---|
-| `systemd/api.socket` | `<项目>-api.socket` | systemd 绑定并持有前台、后台端口 |
+| `systemd/api.socket` | `<项目>-api.socket` | systemd 绑定并持有前台、后台、内部端口 |
 | `systemd/api@.service` | `<项目>-api@.service` | api 实例（`%i` 为 `1`、`2`），`Sockets=` 继承同一个 socket |
 | `systemd/worker.service` | `<项目>-worker.service` | worker，单实例 |
 | `systemd/migrate@.service` | `<项目>-migrate@.service` | 迁移（`%i` 为版本号），一次性服务，环境与 api 相同 |
@@ -146,8 +157,9 @@ deploy/baremetal/render.sh --name myshop --api-port 8080 --admin-port 8081 --wor
 | `app-cmd` | `/opt/<项目>/bin/app-cmd` | 以服务的用户和环境执行子命令 |
 | `app.env.example` | `/etc/<项目>/app.env` | 配置骨架，地址与 socket 一致 |
 
-**全机一份**、不随项目渲染：`openresty/http.conf`（`$trace_id` 的 map、`trace_json` 日志格式）、`openresty/snippets/proxy.conf`
-（各项目 server 块共用的转发设置）、`alloy/host.alloy`（remote_write、Loki 写入、日志 JSON 解析、OTLP 接收与尾部采样；Alloy
+**全机一份**、不随项目渲染：`openresty/http.conf`（`$trace_id` 的 map、`trace_json` 日志格式）、
+`openresty/snippets/proxy.conf`（各项目 server 块共用的转发设置）、`openresty/lua/gateway_auth.lua`（网关鉴权，放到
+`/etc/openresty/lua/`，项目配置用 `access_by_lua_file` 按绝对路径引用，不在共享文件里加 `lua_package_path`）、`alloy/host.alloy`（remote_write、Loki 写入、日志 JSON 解析、OTLP 接收与尾部采样；Alloy
 以目录方式加载，各项目的片段引用它的组件）、`sysctl/90-somaxconn.conf`。
 
 部署目录由 `--root` 指定（默认 `/opt/<项目>`，下有 `releases/<版本>/`、`current`、`bin/`），配置目录由 `--conf-dir` 指定（默认
@@ -239,6 +251,41 @@ Alloy 的 `host.alloy`）。每个项目：`render.sh` 生成并按它打印的�
 `systemd-journal` 组。
 SELinux enforcing 的机器上未验证：若 OpenResty 以 `httpd_t` 受限运行，需要 `setsebool -P httpd_can_network_connect 1`。
 Alloy 在 CentOS 7 上读 systemd 219 的 journald 未验证，部署前单独确认；不行就改用 rsyslog 或 filebeat 采集日志。
+
+### 网关鉴权
+
+按业务模块拆出独立部署的服务、或同一个网关后面有其它语言的后端需要识别前台用户时才开；单体部署用默认的
+`USER_AUTH_MODE=session`。机制和契约见 [auth.md](auth.md) 的"网关鉴权"。
+
+- **渲染**：`render.sh --internal-port <端口>` 生成 api 的内部端口（socket 的 `ListenStream=`、`app.env` 的
+  `HTTP_API_INTERNAL_ADDR`，两个实例共享，和前台端口一样按地址认领）、网关的 `/_auth` 子请求和 `access_by_lua`、带
+  `auth` 字段的访问日志格式（由 `http.conf` 的 `trace_json` 派生，名字带项目名）。全机一份的 `lua/gateway_auth.lua`
+  装到 `/etc/openresty/lua/`；
+- **密钥**（ES256/P-256）：`openssl ecparam -name prime256v1 -genkey -noout -out k.pem`，私钥
+  `openssl pkcs8 -topk8 -nocrypt -in k.pem -outform DER | base64 | tr -d '\n'` 配到 user 服务的
+  `USER_ASSERTION_SIGNING_KEY`（`kid` 配 `USER_ASSERTION_SIGNING_KID`），公钥
+  `openssl ec -in k.pem -pubout -outform DER | base64 | tr -d '\n'` 以 `kid:公钥` 配到所有服务的
+  `GATEWAY_ASSERTION_PUBLIC_KEYS`。启动时检查：私钥和公钥都是 P-256；user 服务的签名 `kid` 必须在公钥清单里且公钥匹配；
+  `USER_AUTH_MODE=gateway` 时必须有公钥清单；
+- **切换顺序**（每一步可以单独回滚，回滚按相反顺序）：
+  1. 应用保持 `USER_AUTH_MODE=session`，配好上面的密钥和 `HTTP_API_INTERNAL_ADDR`，发布；
+  2. 装网关配置（`openresty -t` 后 reload）。后端仍走会话中间件，断言被忽略，这一步每个带令牌的请求查两次会话；
+  3. 改 `USER_AUTH_MODE=gateway`，发布。
+
+  做反了的后果：先开网关、没配密钥，带令牌的请求全部 503 `auth_unavailable`；先切后端模式、网关没开，需要登录的接口
+  全部 401 `invalid_token`；
+- **密钥轮换**分三次发布，和 `JWT_*` 一样先让所有验证方认识新密钥：
+  1. 所有服务的 `GATEWAY_ASSERTION_PUBLIC_KEYS` 加上新 `kid`，全部发布完成；
+  2. user 服务换签名私钥和 `kid`，发布；
+  3. 等"断言有效期 30 秒 + 时钟偏差 5 秒 + 最长请求耗时"（一两分钟）后，从所有服务删掉旧 `kid`。
+
+  第 2 步之前查每个实例的 `gateway_assertion_key_info{kid}` 指标都有新 `kid`：漏了的服务对新断言返回 503（不认识的 `kid`
+  是服务端的问题，不返回 401、不让客户端清令牌）。私钥泄露时顺序不变、不等待：加新公钥 → 切签名私钥 → 立即删旧公钥；
+- **故障表现**：user 服务不可用、查会话失败时带令牌的请求 503 `auth_unavailable`，不带令牌的公开接口不经过子请求。
+  内部端口按客户端 IP 限流（与前台分开计数，额度相同），被限流时网关把 429 原样回给客户端。前台端口和内部端口都只能让
+  网关连到（绑 127.0.0.1 或内网地址）：能直连的人可以伪造断言制造 503 和错误日志；
+  网关自己返回的 503 不带 CORS 头（网关不知道应用的 CORS 名单），跨域的浏览器只看到网络错误，按客户端约定保留令牌重试；
+- **验证**：`deploy/baremetal/gatewaytest` 在真实的 OpenResty 容器里跑渲染出的配置（`make test-integration`）。
 
 ## 版本固定
 

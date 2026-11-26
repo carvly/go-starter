@@ -1,6 +1,9 @@
 package domain
 
-import "app.local/internal/kit/errs"
+import (
+	"app.local/internal/kit/authn"
+	"app.local/internal/kit/errs"
+)
 
 // message 原样显示在客户端（前台用户直接看），所以用中文；Code 供客户端分支处理。
 var (
@@ -11,14 +14,10 @@ var (
 	// 登录与会话。
 	ErrAccountUnavailable = errs.New(errs.KindForbidden, "account_unavailable", "账号已被停用，请联系客服")
 	ErrLoginFailed        = errs.New(errs.KindUnauthorized, "login_failed", "登录失败，请重试")
-	ErrInvalidToken       = errs.New(errs.KindUnauthorized, "invalid_token", "登录状态已失效，请重新登录")
-	// ErrSessionReplaced：会话被同一类设备上的新登录顶掉。客户端提示后由用户确认再登录，不能自动重新登录，
-	// 否则两台设备会互相顶下线。
-	ErrSessionReplaced = errs.New(errs.KindUnauthorized, "session_replaced", "账号已在其它设备登录，请重新登录")
-	ErrReauthRequired  = errs.New(errs.KindForbidden, "recent_auth_required", "该操作需要最近验证过身份，请重新验证后再试")
-	// ErrSessionUnavailable：网关信任 header 模式下没有服务端会话，依赖会话的操作（† 操作、绑定、重新验证）
-	// 不可用。和 ErrReauthRequired 区分开：客户端重新验证也不会成功，不能让它反复重试。
-	ErrSessionUnavailable = errs.New(errs.KindForbidden, "session_unavailable", "当前部署方式不支持这个操作")
+	// 前台鉴权的错误由会话中间件和网关身份中间件共同返回，定义在 kit/authn，这里引用同一个值。
+	ErrInvalidToken    = authn.ErrInvalidToken
+	ErrSessionReplaced = authn.ErrSessionReplaced
+	ErrReauthRequired  = authn.ErrReauthRequired
 	// ErrReturnToInvalid 只在 server 配置错误时才会出现，返回给客户端的是同一个文案。
 	ErrReturnToInvalid = errs.New(errs.KindInvalid, "invalid_return_to", "登录跳转地址不合法")
 

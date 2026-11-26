@@ -71,6 +71,19 @@ func newFlowServer(t *testing.T) (*echo.Echo, *domain.Service, *domaintest.Fakes
 
 func newFlowServerWith(t *testing.T, registry oauth.Registry) (*echo.Echo, *domain.Service, *domaintest.Fakes, *crypto.TokenIssuer) {
 	t.Helper()
+	return newFlowServerAuth(t, registry, func(svc *domain.Service) echo.MiddlewareFunc {
+		return httpapi.NewSessionMiddleware(flowSessionAuth(svc))
+	})
+}
+
+// flowSessionAuth 是测试服务器的会话校验配置，与 newFlowServerAuth 里的签发器同一把密钥。
+func flowSessionAuth(svc *domain.Service) httpapi.SessionAuthConfig {
+	return httpapi.SessionAuthConfig{Sessions: svc, KeyID: "flow-kid", Key: []byte("flow-secret"), ReauthWindow: 10 * time.Minute}
+}
+
+// newFlowServerAuth 的 auth 是前台鉴权中间件（会话中间件或网关身份中间件）。
+func newFlowServerAuth(t *testing.T, registry oauth.Registry, auth func(*domain.Service) echo.MiddlewareFunc) (*echo.Echo, *domain.Service, *domaintest.Fakes, *crypto.TokenIssuer) {
+	t.Helper()
 	fakes := domaintest.NewFakes()
 	deps := fakes.Deps()
 	deps.UoW = uowtest.Immediate{}
@@ -107,8 +120,8 @@ func newFlowServerWith(t *testing.T, registry oauth.Registry) (*echo.Echo, *doma
 		Routes: []func(g *echo.Group){
 			func(g *echo.Group) {
 				httpapi.Register(g, h, httpapi.Middlewares{
-					Auth:              httpapi.NewSessionMiddleware(svc, "flow-kid", []byte("flow-secret"), nil),
-					RequireRecentAuth: httpapi.NewRequireRecentAuth(10 * time.Minute),
+					Auth:              auth(svc),
+					RequireRecentAuth: httpserver.NewRequireRecentAuth(),
 					RateLimit:         pass,
 				})
 			},

@@ -67,7 +67,7 @@ func (s *Source) Env(name string, dst any) error {
 	case *[]string:
 		setStringSlice(v, name)
 	case *map[string]string:
-		setStringMap(v, name)
+		return setStringMap(v, name)
 	case *bool:
 		return setBool(v, name)
 	case *int32:

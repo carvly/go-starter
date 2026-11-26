@@ -24,7 +24,7 @@ type Modules struct {
 
 func buildModules(in *Infra, configs moduleConfigs) *Modules {
 	staffM := staff.New(staff.Deps{DB: in.DBTx, Config: configs.Staff, Argon2: in.Config.Argon2, Operations: adminOperations(), Logger: in.Logger})
-	userM := user.New(user.Deps{DB: in.DBTx, Config: configs.User, Queue: in.Queue, Redis: in.Redis, Logger: in.Logger})
+	userM := user.New(user.Deps{DB: in.DBTx, Config: configs.User, Queue: in.Queue, Redis: in.Redis, Logger: in.Logger, AssertionVerifier: in.AssertionVerifier, Metrics: in.Metrics})
 	return &Modules{
 		Staff: staffM,
 		User:  userM,
@@ -34,6 +34,14 @@ func buildModules(in *Infra, configs moduleConfigs) *Modules {
 func (m *Modules) httpRegistrars() []func(*echo.Group) {
 	return []func(*echo.Group){
 		m.User.RegisterHTTP,
+	}
+}
+
+// internalRegistrars 是在 api 内部端口上有接口的模块（RegisterInternalHTTP，挂在 /internal 下）：网关等基础设施
+// 调用的接口，不面向客户端、不进 spec。
+func (m *Modules) internalRegistrars() []func(*echo.Group) {
+	return []func(*echo.Group){
+		m.User.RegisterInternalHTTP,
 	}
 }
 

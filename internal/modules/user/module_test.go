@@ -2,7 +2,6 @@ package user
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -10,8 +9,9 @@ import (
 
 	"github.com/labstack/echo/v5"
 
-	"app.local/internal/kit/errs"
 	"app.local/internal/modules/user/domain"
+	"app.local/internal/platform/crypto"
+	"app.local/internal/platform/httpserver"
 )
 
 func TestWeChatRegistry_OnlyEnabledEntries(t *testing.T) {
@@ -53,36 +53,38 @@ func TestModule_AddDataCleaner(t *testing.T) {
 	}
 }
 
-// 配置了 USER_TRUSTED_IDENTITY_HEADER 时，前台鉴权信任网关透传的 header，不再要求 bearer token。
-func TestModule_MiddlewareFollowsTrustedIdentityConfig(t *testing.T) {
-	ok := func(c *echo.Context) error { return c.NoContent(http.StatusNoContent) }
-	call := func(mw echo.MiddlewareFunc, header string) int {
-		e := echo.New()
+// USER_AUTH_MODE 决定前台鉴权：session 只认 bearer token；gateway 只认网关转来的签名断言。
+func TestModule_MiddlewareFollowsAuthMode(t *testing.T) {
+	priv, pub, err := crypto.NewAssertionKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, _ := crypto.NewAssertionSigner(priv, "k1")
+	verifier, _ := crypto.NewAssertionVerifier(map[string]string{"k1": pub})
+	assertion, _ := signer.Sign(crypto.Assertion{UserID: "u-1", SessionID: "s-1"})
+
+	call := func(mw echo.MiddlewareFunc, assertion string) int {
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
-		if header != "" {
-			req.Header.Set("X-Gateway-User", header)
+		if assertion != "" {
+			req.Header.Set(httpserver.HeaderAuthAssertion, assertion)
 		}
 		rec := httptest.NewRecorder()
-		err := mw(ok)(e.NewContext(req, rec))
-		var he *echo.HTTPError
-		if errors.As(err, &he) {
-			return he.Code
-		}
-		if be, ok := errs.As(err); ok && be.Kind == errs.KindUnauthorized {
-			return http.StatusUnauthorized
+		err := mw(func(c *echo.Context) error { return c.NoContent(http.StatusNoContent) })(echo.New().NewContext(req, rec))
+		if err != nil {
+			return httpserver.StatusOf(err)
 		}
 		return rec.Code
 	}
-	trusted := &Module{cfg: Config{TrustedIdentityHeader: "X-Gateway-User"}}
-	if got := call(trusted.Middleware(), "u-1"); got != http.StatusNoContent {
-		t.Errorf("带网关 header = %d, want 204", got)
+	gateway := New(Deps{Config: Config{JWTKeyID: "kid", JWTSigningKey: "secret", AuthMode: AuthModeGateway}, AssertionVerifier: verifier})
+	if got := call(gateway.Middleware(), assertion); got != http.StatusNoContent {
+		t.Errorf("gateway 模式带断言 = %d, want 204", got)
 	}
-	if got := call(trusted.Middleware(), ""); got != http.StatusUnauthorized {
-		t.Errorf("缺网关 header = %d, want 401", got)
+	if got := call(gateway.Middleware(), ""); got != http.StatusUnauthorized {
+		t.Errorf("gateway 模式不带断言 = %d, want 401", got)
 	}
-	session := &Module{cfg: Config{JWTKeyID: "kid", JWTSigningKey: "secret"}}
-	if got := call(session.Middleware(), "u-1"); got != http.StatusUnauthorized {
-		t.Errorf("未配置时只认 bearer token，带网关 header = %d, want 401", got)
+	session := New(Deps{Config: Config{JWTKeyID: "kid", JWTSigningKey: "secret", AuthMode: AuthModeSession}, AssertionVerifier: verifier})
+	if got := call(session.Middleware(), assertion); got != http.StatusUnauthorized {
+		t.Errorf("session 模式只认 bearer token，带断言 = %d, want 401", got)
 	}
 }
 

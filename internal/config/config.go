@@ -5,9 +5,11 @@ package config
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -31,7 +33,17 @@ type Config struct {
 	Argon2 Argon2Params `yaml:"argon2"`
 	// Tracing 只在这里读导出地址；其余 OTEL_EXPORTER_OTLP_*（headers、超时）由 exporter 直接读环境变量。
 	Tracing TracingConfig `yaml:"tracing"`
+	Gateway GatewayConfig `yaml:"gateway"`
 	Source  *Source       `yaml:"-"`
+}
+
+// GatewayConfig 是网关鉴权的基础设施配置（docs/agents/auth.md 的"网关鉴权"）。拆出去、没有 user 模块的服务也要
+// 验证断言，所以公钥清单属于基础设施，不属于 user 模块。
+type GatewayConfig struct {
+	// AssertionPublicKeys 是 kid → 身份断言公钥（base64 的 SPKI DER，P-256），所有验证方用同一份，只从环境变量
+	// GATEWAY_ASSERTION_PUBLIC_KEYS 读：签发方（user 模块）加载配置时读同一个变量，检查清单里有自己的公钥。
+	// 为空时不验证断言，前台鉴权只能用会话中间件。
+	AssertionPublicKeys map[string]string `yaml:"-"`
 }
 
 // TracingConfig 控制 trace 是否导出。不论是否导出，每个请求和任务都有 trace_id（见 internal/platform/tracing）。
@@ -77,6 +89,10 @@ type HTTPConfig struct {
 	// InternalAddr 是 /healthz、/metrics（cmd/worker 场景）监听的内部
 	// 端口，不发布到宿主机。
 	InternalAddr string `yaml:"internal_addr"`
+
+	// APIInternalAddr 是 api 内部端口的监听地址（网关调用的会话校验等，见 httpserver.NewInternalAPI），为空时不启动。
+	// 不能复用 InternalAddr：worker 用它，同一台机器上 api 和 worker 会冲突。
+	APIInternalAddr string `yaml:"api_internal_addr"`
 
 	// AdminAddr 是后台 server 的监听地址，为空时不启动后台 server。它和 Addr
 	// 是两个独立的 Echo 实例：可以只绑内网或 localhost，公网入口上没有 /admin/v1。
@@ -223,6 +239,7 @@ func applyEnvOverrides(cfg *Config) error {
 	setString(&cfg.HTTP.Addr, "HTTP_ADDR")
 	setString(&cfg.HTTP.InternalAddr, "HTTP_INTERNAL_ADDR")
 	setString(&cfg.HTTP.AdminAddr, "HTTP_ADMIN_ADDR")
+	setString(&cfg.HTTP.APIInternalAddr, "HTTP_API_INTERNAL_ADDR")
 	setString(&cfg.HTTP.AdminOrigin, "HTTP_ADMIN_ORIGIN")
 	setStringSlice(&cfg.CORS.AllowOrigins, "CORS_ALLOW_ORIGINS")
 	setString(&cfg.Redis.Addr, "REDIS_ADDR")
@@ -241,6 +258,7 @@ func applyEnvOverrides(cfg *Config) error {
 		setUint32(&cfg.Argon2.MemoryKiB, "ARGON2_MEMORY_KIB"),
 		setUint32(&cfg.Argon2.Iterations, "ARGON2_ITERATIONS"),
 		setUint8(&cfg.Argon2.Parallelism, "ARGON2_PARALLELISM"),
+		setStringMap(&cfg.Gateway.AssertionPublicKeys, "GATEWAY_ASSERTION_PUBLIC_KEYS"),
 	)
 }
 
@@ -303,10 +321,15 @@ func validate(cfg *Config) error {
 	if cfg.HTTP.AdminAddr != "" && cfg.HTTP.AdminAddr == cfg.HTTP.Addr {
 		return fmt.Errorf("config: HTTP_ADMIN_ADDR must differ from HTTP_ADDR (%q): the admin server is a separate listener", cfg.HTTP.Addr)
 	}
+	if a := cfg.HTTP.APIInternalAddr; a != "" && (a == cfg.HTTP.Addr || a == cfg.HTTP.AdminAddr) {
+		return fmt.Errorf("config: HTTP_API_INTERNAL_ADDR (%q) must differ from HTTP_ADDR and HTTP_ADMIN_ADDR: it is a separate listener", a)
+	}
 	if cfg.HTTP.SocketActivation {
-		addrs := []struct{ env, addr string }{{"HTTP_ADDR", cfg.HTTP.Addr}, {"HTTP_ADMIN_ADDR", cfg.HTTP.AdminAddr}}
+		addrs := []struct{ env, addr string }{
+			{"HTTP_ADDR", cfg.HTTP.Addr}, {"HTTP_ADMIN_ADDR", cfg.HTTP.AdminAddr}, {"HTTP_API_INTERNAL_ADDR", cfg.HTTP.APIInternalAddr},
+		}
 		for _, a := range addrs {
-			if a.addr == "" && a.env == "HTTP_ADMIN_ADDR" {
+			if a.addr == "" && a.env != "HTTP_ADDR" {
 				continue
 			}
 			if !isIPPort(a.addr) {
@@ -379,6 +402,8 @@ func (c *Config) Redacted() map[string]any {
 		"http_internal_addr":          c.HTTP.InternalAddr,
 		"http_admin_addr":             c.HTTP.AdminAddr,
 		"http_admin_origin":           c.HTTP.AdminOrigin,
+		"http_api_internal_addr":      c.HTTP.APIInternalAddr,
+		"gateway_assertion_kids":      slices.Sorted(maps.Keys(c.Gateway.AssertionPublicKeys)),
 		"cors_allow_origins":          c.CORS.AllowOrigins,
 		"db_dsn":                      "***",
 		"db_max_conns":                c.DB.MaxConns,
@@ -422,14 +447,13 @@ func setStringSlice(dst *[]string, env string) {
 	}
 }
 
-// setStringMap 解析形如 "kid1:secret1,kid2:secret2" 的环境变量成
-// map[string]string——目前只有 JWT_ADDITIONAL_KEYS 用这个格式。忽略
-// 格式不对的单个 pair（没有冒号），不因为一个 pair 写错就让整个值
-// 解析失败——密钥轮换时这个字段本来就允许为空。
-func setStringMap(dst *map[string]string, env string) {
+// setStringMap 解析形如 "kid1:value1,kid2:value2" 的环境变量成 map[string]string（JWT_ADDITIONAL_KEYS、
+// GATEWAY_ASSERTION_PUBLIC_KEYS 用这个格式）。整个值为空时得到空 map；任何一项格式不对（没有冒号、键或值为空、
+// 键重复）都返回错误：密钥轮换时写错一项会让那把密钥悄悄失效，启动时就要报出来。
+func setStringMap(dst *map[string]string, env string) error {
 	v, ok := os.LookupEnv(env)
 	if !ok {
-		return
+		return nil
 	}
 	out := make(map[string]string)
 	for pair := range strings.SplitSeq(v, ",") {
@@ -438,12 +462,17 @@ func setStringMap(dst *map[string]string, env string) {
 			continue
 		}
 		k, val, found := strings.Cut(pair, ":")
-		if !found {
-			continue
+		k, val = strings.TrimSpace(k), strings.TrimSpace(val)
+		if !found || k == "" || val == "" {
+			return fmt.Errorf("config: %s: each entry must be key:value with both non-empty", env)
 		}
-		out[strings.TrimSpace(k)] = strings.TrimSpace(val)
+		if _, dup := out[k]; dup {
+			return fmt.Errorf("config: %s: duplicate key %q", env, k)
+		}
+		out[k] = val
 	}
 	*dst = out
+	return nil
 }
 
 // 下面这些 setXxx 解析失败时都返回一个 error，不能像早期版本那样直接

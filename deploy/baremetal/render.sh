@@ -3,10 +3,12 @@
 # 网关 upstream、Alloy 组件都由项目名派生，端口和域名由参数给出，互不冲突。见 docs/agents/deploy-ci.md 的"裸机发布"。
 #
 #   render.sh --name myshop --api-port 8080 --worker-port 9090 --api-domain api.myshop.com \
-#             [--admin-port 8081 --admin-domain admin.myshop.com] [--root DIR] [--conf-dir DIR] [--out DIR]
+#             [--admin-port 8081 --admin-domain admin.myshop.com] [--internal-port 8082] [--root DIR] [--conf-dir DIR] [--out DIR]
 #
 # --root 是部署目录（releases/、current、bin/），默认 /opt/<项目>；--conf-dir 放 app.env，默认 /etc/<项目>。
 # 不启用后台（没有后台路由，如删除了 staff 模块）时省略 --admin-port、--admin-domain，后台相关的行全部去掉。
+# --internal-port 启用网关鉴权（docs/agents/auth.md 的"网关鉴权"）：api 的内部端口、网关的会话校验子请求和 Lua、带 auth
+# 字段的访问日志格式；省略时以 @gateway 开头的行全部去掉。
 # 全机一份、不随项目渲染的文件：openresty/http.conf、openresty/snippets/proxy.conf、alloy/host.alloy、sysctl/。
 set -euo pipefail
 
@@ -15,13 +17,14 @@ die() {
     exit 1
 }
 
-NAME='' API_PORT='' ADMIN_PORT='' WORKER_PORT='' API_DOMAIN='' ADMIN_DOMAIN='' ROOT='' CONF_DIR='' OUT=''
+NAME='' API_PORT='' ADMIN_PORT='' WORKER_PORT='' INTERNAL_PORT='' API_DOMAIN='' ADMIN_DOMAIN='' ROOT='' CONF_DIR='' OUT=''
 while (($#)); do
     case $1 in
     --name) NAME=${2:-} ;;
     --api-port) API_PORT=${2:-} ;;
     --admin-port) ADMIN_PORT=${2:-} ;;
     --worker-port) WORKER_PORT=${2:-} ;;
+    --internal-port) INTERNAL_PORT=${2:-} ;;
     --api-domain) API_DOMAIN=${2:-} ;;
     --admin-domain) ADMIN_DOMAIN=${2:-} ;;
     --root) ROOT=${2:-} ;;
@@ -47,12 +50,18 @@ if [[ -n $ADMIN_PORT || -n $ADMIN_DOMAIN ]]; then
     valid_domain "$ADMIN_DOMAIN" || die "启用后台时 --admin-domain 必须是域名：$ADMIN_DOMAIN"
     ADMIN=true
 fi
+GATEWAY=false
+if [[ -n $INTERNAL_PORT ]]; then
+    valid_port "$INTERNAL_PORT" || die "--internal-port 必须是 1~65535 的端口：$INTERNAL_PORT"
+    GATEWAY=true
+fi
 ROOT=${ROOT:-/opt/$NAME}
 CONF_DIR=${CONF_DIR:-/etc/$NAME}
 valid_dir "$ROOT" || die "--root 必须是绝对路径、不以 / 结尾，只含字母数字和 ._-：$ROOT"
 valid_dir "$CONF_DIR" || die "--conf-dir 必须是绝对路径、不以 / 结尾，只含字母数字和 ._-：$CONF_DIR"
 ports=("$API_PORT" "$WORKER_PORT")
 $ADMIN && ports+=("$ADMIN_PORT")
+$GATEWAY && ports+=("$INTERNAL_PORT")
 [[ $(printf '%s\n' "${ports[@]}" | sort -u | wc -l) -eq ${#ports[@]} ]] || die "端口不能重复：${ports[*]}"
 
 SRC=$(cd "$(dirname "$0")" && pwd)
@@ -60,13 +69,26 @@ OUT=${OUT:-./rendered-$NAME}
 [[ ! -e $OUT ]] || die "$OUT 已存在，换一个 --out 或先删掉"
 mkdir -p "$OUT"/{systemd,openresty,alloy,bin,etc}
 
-# render <模板> <目标>：替换占位符；以 "@admin " 开头的行在启用后台时去掉前缀，否则整行删除。
+# 开了网关鉴权的项目的访问日志格式：从全机一份的 http.conf 里的 trace_json 派生，多一个 auth 字段（gateway_auth.lua
+# 写入的 $auth_result）。不能直接改 trace_json：没开网关鉴权的 server 没有定义 $auth_result，nginx -t 会失败。
+API_LOG_FORMAT=trace_json
+if $GATEWAY; then
+    API_LOG_FORMAT=${NAME//-/_}_trace_json_auth
+    auth_field="\"auth\":\"\$auth_result\""
+    AUTH_LOG_FORMAT=$(sed -n '/^log_format trace_json /,/;$/p' "$SRC/openresty/http.conf" |
+        sed -e "s/^log_format trace_json /log_format $API_LOG_FORMAT /" -e "s/}';\$/,$auth_field}';/")
+    [[ $AUTH_LOG_FORMAT == *"$auth_field}';" ]] || die "没能从 openresty/http.conf 派生访问日志格式：trace_json 的写法变了"
+fi
+
+# render <模板> <目标>：替换占位符；以 "@admin "、"@gateway" 开头的行在启用后台、网关鉴权时去掉前缀，否则整行删除。
 render() {
-    local admin_rule='/^[[:space:]]*@admin /d'
+    local admin_rule='/^[[:space:]]*@admin /d' gateway_rule='/^[[:space:]]*@gateway\( .*\)\{0,1\}$/d'
     $ADMIN && admin_rule='s/^\([[:space:]]*\)@admin /\1/'
-    sed -e "$admin_rule" \
+    $GATEWAY && gateway_rule='s/^\([[:space:]]*\)@gateway \{0,1\}/\1/'
+    sed -e "$admin_rule" -e "$gateway_rule" \
         -e "s/{{name}}/$NAME/g" -e "s/{{name_id}}/${NAME//-/_}/g" \
         -e "s/{{api_port}}/$API_PORT/g" -e "s/{{admin_port}}/$ADMIN_PORT/g" -e "s/{{worker_port}}/$WORKER_PORT/g" \
+        -e "s/{{internal_port}}/$INTERNAL_PORT/g" -e "s/{{api_log_format}}/$API_LOG_FORMAT/g" \
         -e "s/{{api_domain}}/$API_DOMAIN/g" -e "s/{{admin_domain}}/$ADMIN_DOMAIN/g" \
         -e "s|{{root}}|$ROOT|g" -e "s|{{conf_dir}}|$CONF_DIR|g" \
         "$SRC/$1" >"$2"
@@ -77,6 +99,10 @@ render systemd/api@.service "$OUT/systemd/$NAME-api@.service"
 render systemd/worker.service "$OUT/systemd/$NAME-worker.service"
 render systemd/migrate@.service "$OUT/systemd/$NAME-migrate@.service"
 render openresty/project.conf "$OUT/openresty/$NAME.conf"
+if $GATEWAY; then
+    { printf '%s\n\n' "$AUTH_LOG_FORMAT"; cat "$OUT/openresty/$NAME.conf"; } >"$OUT/openresty/$NAME.tmp"
+    mv "$OUT/openresty/$NAME.tmp" "$OUT/openresty/$NAME.conf"
+fi
 if $ADMIN; then
     render openresty/admin.conf "$OUT/openresty/admin.tmp"
     cat "$OUT/openresty/admin.tmp" >>"$OUT/openresty/$NAME.conf"
@@ -88,7 +114,7 @@ render app-cmd "$OUT/bin/app-cmd"
 render app.env.example "$OUT/etc/app.env.example"
 chmod 755 "$OUT/bin/rollout.sh" "$OUT/bin/app-cmd"
 
-if left=$(grep -rn -e '{{' -e '@admin ' "$OUT"); then
+if left=$(grep -rn -e '{{' -e '@admin ' -e '@gateway' "$OUT"); then
     die "渲染结果里还有未替换的占位符：$left"
 fi
 

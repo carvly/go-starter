@@ -361,3 +361,58 @@ func TestLoad_SocketActivationRequiresIPPort(t *testing.T) {
 		})
 	}
 }
+
+// kid:secret 列表写错一项时启动失败：悄悄丢掉那一项会让轮换中的旧密钥失效。
+func TestSourceEnv_StringMapRejectsMalformedEntries(t *testing.T) {
+	src := config.NewSource()
+	for _, v := range []string{"old-1secret", "old-1:", ":secret", "a:1,a:2", "a:1, b"} {
+		t.Setenv("TEST_STRING_MAP", v)
+		var m map[string]string
+		if err := src.Env("TEST_STRING_MAP", &m); err == nil || !strings.Contains(err.Error(), "TEST_STRING_MAP") {
+			t.Errorf("Env(%q) error = %v, want 写明变量名的错误", v, err)
+		}
+	}
+	t.Setenv("TEST_STRING_MAP", " a : 1 ,, b:2 ")
+	var m map[string]string
+	if err := src.Env("TEST_STRING_MAP", &m); err != nil || len(m) != 2 || m["a"] != "1" || m["b"] != "2" {
+		t.Errorf("Env = %v, %v, want map[a:1 b:2]", m, err)
+	}
+	t.Setenv("TEST_STRING_MAP", "")
+	if err := src.Env("TEST_STRING_MAP", &m); err != nil || len(m) != 0 {
+		t.Errorf("空值 = %v, %v, want 空 map", m, err)
+	}
+}
+
+func TestLoad_GatewayAndAPIInternalAddr(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("GATEWAY_ASSERTION_PUBLIC_KEYS", "k1:AAAA, k2:BBBB")
+	t.Setenv("HTTP_API_INTERNAL_ADDR", "127.0.0.1:8082")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Gateway.AssertionPublicKeys) != 2 || cfg.Gateway.AssertionPublicKeys["k2"] != "BBBB" || cfg.HTTP.APIInternalAddr != "127.0.0.1:8082" {
+		t.Errorf("Gateway = %+v, APIInternalAddr = %q", cfg.Gateway, cfg.HTTP.APIInternalAddr)
+	}
+	if kids := cfg.Redacted()["gateway_assertion_kids"]; len(kids.([]string)) != 2 {
+		t.Errorf("启动快照应列出 kid：%v", kids)
+	}
+}
+
+func TestLoad_APIInternalAddrRejected(t *testing.T) {
+	for name, env := range map[string]map[string]string{
+		"与前台相同":                      {"HTTP_ADDR": "127.0.0.1:8080", "HTTP_API_INTERNAL_ADDR": "127.0.0.1:8080"},
+		"socket activation 不是 IP:端口": {"HTTP_ADDR": "127.0.0.1:8080", "HTTP_SOCKET_ACTIVATION": "true", "HTTP_API_INTERNAL_ADDR": ":8082"},
+		"公钥清单格式不对":                   {"GATEWAY_ASSERTION_PUBLIC_KEYS": "k1"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			setRequiredEnv(t)
+			for k, v := range env {
+				t.Setenv(k, v)
+			}
+			if _, err := config.Load(); err == nil {
+				t.Error("Load() error = nil")
+			}
+		})
+	}
+}

@@ -52,7 +52,7 @@ func RunAPI(ctx context.Context, cfg *config.Config) error {
 
 	mods := buildModules(in, configs)
 	if !cfg.HTTP.SocketActivation {
-		if err := bindListeners(lns, cfg.HTTP, adminEnabled(in, mods.adminRegistrars())); err != nil {
+		if err := bindListeners(lns, cfg.HTTP, adminEnabled(in, mods.adminRegistrars()), internalEnabled(in, mods.internalRegistrars())); err != nil {
 			return err
 		}
 	}
@@ -72,8 +72,8 @@ func RunAPI(ctx context.Context, cfg *config.Config) error {
 	return lifecycle.Run(ctx, apiShutdownTimeout(cfg), components...)
 }
 
-// bindListeners 是自己绑定端口的部署（非 socket activation）：前台总是绑定；后台只在启用时绑定，否则不监听后台端口。
-func bindListeners(lns *apiListeners, cfg config.HTTPConfig, adminOn bool) error {
+// bindListeners 是自己绑定端口的部署（非 socket activation）：前台总是绑定；后台、内部端口只在启用时绑定。
+func bindListeners(lns *apiListeners, cfg config.HTTPConfig, adminOn, internalOn bool) error {
 	var err error
 	if lns.front, err = httpserver.Listen(cfg.Addr); err != nil {
 		return fmt.Errorf("app: %w", err)
@@ -83,15 +83,24 @@ func bindListeners(lns *apiListeners, cfg config.HTTPConfig, adminOn bool) error
 			return fmt.Errorf("app: %w", err)
 		}
 	}
+	if internalOn {
+		if lns.internal, err = httpserver.Listen(cfg.APIInternalAddr); err != nil {
+			return fmt.Errorf("app: %w", err)
+		}
+	}
 	return nil
 }
 
-// apiComponents 是 api 进程的 HTTP server：前台总是启动；后台只在配置了地址且有后台路由时启动。lns 是已就绪的
-// 监听 socket：socket activation 时来自 systemd，否则由 bindListeners 绑定。
+// apiComponents 是 api 进程的 HTTP server：前台总是启动；后台、内部端口只在配置了地址且有对应路由时启动。lns 是
+// 已就绪的监听 socket：socket activation 时来自 systemd，否则由 bindListeners 绑定。
 func apiComponents(in *Infra, mods *Modules, lns *apiListeners) ([]lifecycle.Component, error) {
 	socket := in.Config.HTTP.SocketActivation
 	adminOn := adminEnabled(in, mods.adminRegistrars())
-	if err := checkAdminSocket(adminOn, lns); err != nil {
+	internalOn := internalEnabled(in, mods.internalRegistrars())
+	if err := checkOptionalSockets(
+		optionalSocket{name: "admin", env: "HTTP_ADMIN_ADDR", enabled: adminOn, ln: lns.admin},
+		optionalSocket{name: "internal", env: "HTTP_API_INTERNAL_ADDR", enabled: internalOn, ln: lns.internal},
+	); err != nil {
 		return nil, err
 	}
 	e, err := httpserver.New(apiServerDeps(in, mods))
@@ -112,11 +121,30 @@ func apiComponents(in *Infra, mods *Modules, lns *apiListeners) ([]lifecycle.Com
 	if adminOn {
 		components = append(components, httpserver.Component("admin", adminServer, lns.admin, stop))
 	}
+	if internalOn {
+		internalServer, err := httpserver.NewInternalAPI(httpserver.InternalDeps{
+			Logger:         in.Logger,
+			HTTP:           in.Config.HTTP,
+			RateLimitStore: ratelimit.NewStore(in.Redis, "internal", globalRate(in), in.Logger),
+			Routes:         mods.internalRegistrars(),
+			Metrics:        in.Metrics,
+			Tracer:         in.Tracer,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("app: build internal server: %w", err)
+		}
+		components = append(components, httpserver.Component("internal", internalServer, lns.internal, stop))
+	}
 	return components, nil
 }
 
 func adminEnabled(in *Infra, routes []func(*echo.Group)) bool {
 	return in.Config.HTTP.AdminAddr != "" && len(routes) > 0
+}
+
+// internalEnabled：内部端口只在配置了 HTTP_API_INTERNAL_ADDR 且有模块注册内部接口时启动。
+func internalEnabled(in *Infra, routes []func(*echo.Group)) bool {
+	return in.Config.HTTP.APIInternalAddr != "" && len(routes) > 0
 }
 
 func apiServerDeps(in *Infra, mods *Modules) httpserver.Deps {

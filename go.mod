@@ -13,6 +13,7 @@ require (
 	github.com/jackc/pgx/v5 v5.13.0
 	github.com/joho/godotenv v1.5.1
 	github.com/labstack/echo/v5 v5.4.6
+	github.com/moby/moby/api v1.56.1
 	github.com/oapi-codegen/runtime v1.9.0
 	github.com/prometheus/client_golang v1.25.0
 	github.com/redis/go-redis/extra/redisotel/v9 v9.23.0
@@ -21,6 +22,7 @@ require (
 	github.com/riverqueue/river/riverdriver/riverpgxv5 v0.51.2
 	github.com/riverqueue/river/rivertype v0.51.2
 	github.com/riverqueue/rivercontrib/otelriver v0.12.0
+	github.com/testcontainers/testcontainers-go v0.45.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.45.0
 	go.opentelemetry.io/otel v1.47.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.47.0
@@ -107,7 +109,6 @@ require (
 	github.com/mitchellh/reflectwalk v1.0.2 // indirect
 	github.com/moby/docker-image-spec v1.3.1 // indirect
 	github.com/moby/go-archive v0.3.3 // indirect
-	github.com/moby/moby/api v1.56.1 // indirect
 	github.com/moby/moby/client v0.6.2 // indirect
 	github.com/moby/patternmatcher v0.6.1 // indirect
 	github.com/moby/sys/sequential v0.7.0 // indirect
@@ -138,7 +139,6 @@ require (
 	github.com/speakeasy-api/openapi v1.25.5 // indirect
 	github.com/spf13/afero v1.15.0 // indirect
 	github.com/stretchr/testify v1.12.1 // indirect
-	github.com/testcontainers/testcontainers-go v0.45.0 // indirect
 	github.com/tidwall/gjson v1.20.0 // indirect
 	github.com/tidwall/jsonc v0.3.3 // indirect
 	github.com/tidwall/match v1.2.0 // indirect

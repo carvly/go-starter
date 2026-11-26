@@ -13,7 +13,7 @@ internal/modules/<m>/
   module.yaml        web_paths：前端页面、路由和 E2E 的唯一归属声明
   migrations/        本模块独立编号的数据库迁移
   module.go          对组合根暴露的唯一入口：Deps、Module、New，以及按需实现的
-                     RegisterHTTP / RegisterAdminHTTP / RegisterJobs / Commands / PeriodicJobs
+                     RegisterHTTP / RegisterAdminHTTP / RegisterInternalHTTP / RegisterJobs / Commands / PeriodicJobs
   domain/            实体、错误（errs.New）、端口接口（ports.go）、Service、单元测试
     domaintest/      内存 fake + Repository 契约测试（RunRepositoryContract），只能在测试里导入
   postgres/          Repository 的 Postgres 实现 + 跑契约测试的集成测试
@@ -228,9 +228,9 @@ Repository 不是任何公开字段。
 |---|---|---|
 | 同步调用由组合根用对方的 Service 适配 | 远程客户端（oapi-codegen 按 tag 生成 client）：超时、只重试幂等请求、传播 trace（traceparent）、把远端错误翻译成消费方的错误；跑消费方已有的窄接口契约用例（见上面"跨模块协作"） | `internal/app/adapters_*.go` |
 | river 只在同一个库里投递 | river 继续做本服务的 outbox，新增 relay worker 转发到外部 MQ | [queue.md](queue.md) 的“外部消息队列” |
-| JWT 用 HS256 共享密钥 | 只校验不签发的服务出现时换 RS256/ES256 + JWKS，或后端统一用网关信任 header 模式 | `internal/platform/crypto/jwt.go`、[auth.md](auth.md) |
+| JWT 用 HS256 共享密钥 | 拆出去的服务不验 access token：用网关鉴权（`USER_AUTH_MODE=gateway`），只验 ES256 的身份断言 | [auth.md](auth.md) 的"网关鉴权" |
 | 一个组合根装配全部模块 | 每个服务一个显式的组合根（`modules.go`），不在运行时自动判断对方在本进程还是远程 | `internal/app/modules.go` |
-| 前台会话校验每个请求查 `user_sessions` | 拆出去的服务读不到 `user_sessions`：由网关（OpenResty `auth_request`）子请求 user 服务的内网端点校验会话，结果不缓存，user 服务不可用时需要登录的接口全部失败；各服务用信任 header 模式，并扩展为同时读会话 ID、`auth_time`、`amr`，† 操作才能用。需要拆分时再设计 | `internal/modules/user/httpapi/trusted_identity_middleware.go` |
+| 前台会话校验每个请求查 `user_sessions` | 已实现网关鉴权：网关子请求 user 服务内部端口的校验端点，换成断言转给各服务，结果不缓存，user 服务不可用时带令牌的请求 503。拆分时把网关 `/_auth` 的 upstream 指向 user 服务的内部地址；拆出去的服务在自己的组合根里用 `httpserver.NewGatewayIdentityMiddleware`、`httpserver.NewRequireRecentAuth` 接线，生成器"恰好一个模块提供 `Middleware()`"的规则随之重新设计 | [auth.md](auth.md) 的"网关鉴权"、[deploy-ci.md](deploy-ci.md) 的"网关鉴权" |
 
 明确不做：运行时服务注册表 / 自动识别本地或远程调用、能在 river 和外部 MQ 之间切换的
 通用事件总线、为了“以后可能拆”让单体也走远程语义。本地调用和远程调用的事务、失败模式、

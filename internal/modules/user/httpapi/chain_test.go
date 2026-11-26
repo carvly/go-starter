@@ -2,7 +2,6 @@ package httpapi_test
 
 import (
 	"encoding/json"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -12,12 +11,9 @@ import (
 
 	"github.com/labstack/echo/v5"
 
-	"app.local/internal/config"
 	"app.local/internal/modules/user/domain/domaintest"
-	"app.local/internal/modules/user/httpapi"
 	"app.local/internal/platform/httpserver"
 	"app.local/internal/platform/oauth"
-	"app.local/internal/platform/tracing"
 )
 
 // 第三方登录通用链路：provider 声明的能力一定被流程生成、传递并在回调时取回；未声明时什么都不生成。
@@ -239,46 +235,5 @@ func TestChain_NativeNonce(t *testing.T) {
 	// 缺 provider 需要的字段：ErrMissingCredential 对客户端也是统一的登录失败。
 	if rec := nativeLogin(t, e, "plain-app", map[string]string{"device_class": "phone", "code": "c"}); !failed(rec) {
 		t.Errorf("缺 id_token = %d, want 登录失败", rec.Code)
-	}
-}
-
-// 网关信任 header 模式没有服务端会话：† 操作、发起重新验证都返回明确的 session_unavailable，
-// 不能返回 recent_auth_required 让客户端去重新验证（重新验证在这个模式下永远不会成功）。
-func TestTrustedIdentity_SessionOperationsUnavailable(t *testing.T) {
-	stub := &stubProvider{}
-	h := httpapi.NewHandler(httpapi.Deps{OAuth: oauth.Registry{"plain": {Provider: stub}}, PublicBaseURL: "https://api.example.com"})
-	pass := func(next echo.HandlerFunc) echo.HandlerFunc { return next }
-	e, err := httpserver.New(httpserver.Deps{
-		Tracer: tracing.Disabled(),
-		Logger: slog.New(slog.DiscardHandler),
-		HTTP:   config.HTTPConfig{BodyLimitBytes: 1 << 20, RequestTimeout: 5 * time.Second, GlobalRateLimitPerSecond: 1000},
-		CORS:   config.CORSConfig{AllowOrigins: []string{"https://app.example.com"}},
-		Routes: []func(g *echo.Group){func(g *echo.Group) {
-			httpapi.Register(g, h, httpapi.Middlewares{
-				Auth:              httpapi.NewTrustedIdentityMiddleware("X-Gateway-User"),
-				RequireRecentAuth: httpapi.NewRequireRecentAuth(10 * time.Minute),
-				RateLimit:         pass,
-			})
-		}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, op := range []struct{ method, path string }{
-		{http.MethodDelete, "/v1/me"},
-		{http.MethodPost, "/v1/me/reauthenticate/oauth/plain"},
-		{http.MethodPost, "/v1/me/identities/oauth/plain"},
-	} {
-		req := httptest.NewRequest(op.method, op.path, strings.NewReader("{}"))
-		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
-		req.Header.Set("X-Gateway-User", "u-1")
-		rec := httptest.NewRecorder()
-		e.ServeHTTP(rec, req)
-		if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "session_unavailable") {
-			t.Errorf("%s %s = %d %s, want 403 session_unavailable", op.method, op.path, rec.Code, rec.Body.String())
-		}
-	}
-	if stub.authorize.State != "" {
-		t.Error("没有会话时不能发起授权流程")
 	}
 }

@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -16,19 +15,19 @@ import (
 // apiListeners 是 api 进程的监听 socket。socket activation 时来自 systemd（.socket 单元的 ListenStream=），由轮流上线的
 // 实例共享；否则由 bindListeners 按配置绑定。
 type apiListeners struct {
-	front, admin net.Listener
+	front, admin, internal net.Listener
 }
 
 func (l *apiListeners) close() {
-	for _, ln := range []net.Listener{l.front, l.admin} {
+	for _, ln := range []net.Listener{l.front, l.admin, l.internal} {
 		if ln != nil {
 			_ = ln.Close()
 		}
 	}
 }
 
-// inheritListeners 取得 systemd 传来的监听 socket，按地址认领用途。后台 socket 的有无与后台是否启动的比对要等模块
-// 构造之后（checkAdminSocket）：后台是否启动取决于有没有后台路由。
+// inheritListeners 取得 systemd 传来的监听 socket，按地址认领用途。后台、内部端口的 socket 的有无与它们是否启动的
+// 比对要等模块构造之后（checkOptionalSockets）：是否启动取决于有没有对应的路由。
 func inheritListeners(cfg config.HTTPConfig) (*apiListeners, error) {
 	lns, err := systemd.Listeners()
 	if err != nil {
@@ -44,7 +43,8 @@ func inheritListeners(cfg config.HTTPConfig) (*apiListeners, error) {
 	return out, nil
 }
 
-// matchInherited 按地址认领继承的 socket：HTTP_ADDR 是前台、HTTP_ADMIN_ADDR 是后台，与 ListenStream= 的书写顺序无关
+// matchInherited 按地址认领继承的 socket：HTTP_ADDR 是前台、HTTP_ADMIN_ADDR 是后台、HTTP_API_INTERNAL_ADDR 是内部端口，
+// 与 ListenStream= 的书写顺序无关
 // （systemd 219 没有 FileDescriptorName=，只能靠地址区分）。前台必须有；认领不了的 socket、重复的地址都报错：
 // 没人 accept 的 socket 上的连接不会被拒绝，而是挂到客户端超时。
 func matchInherited(lns []net.Listener, cfg config.HTTPConfig) (*apiListeners, error) {
@@ -55,6 +55,7 @@ func matchInherited(lns []net.Listener, cfg config.HTTPConfig) (*apiListeners, e
 	}{
 		{"HTTP_ADDR", cfg.Addr, &out.front},
 		{"HTTP_ADMIN_ADDR", cfg.AdminAddr, &out.admin},
+		{"HTTP_API_INTERNAL_ADDR", cfg.APIInternalAddr, &out.internal},
 	}
 	for _, ln := range lns {
 		claimed := false
@@ -69,8 +70,9 @@ func matchInherited(lns []net.Listener, cfg config.HTTPConfig) (*apiListeners, e
 			break
 		}
 		if !claimed {
-			return nil, fmt.Errorf("app: systemd passed a socket on %s that matches neither HTTP_ADDR=%q nor HTTP_ADMIN_ADDR=%q: "+
-				"ListenStream= in the .socket unit and the addresses in the environment must agree", ln.Addr(), cfg.Addr, cfg.AdminAddr)
+			return nil, fmt.Errorf("app: systemd passed a socket on %s that matches none of HTTP_ADDR=%q, HTTP_ADMIN_ADDR=%q, "+
+				"HTTP_API_INTERNAL_ADDR=%q: ListenStream= in the .socket unit and the addresses in the environment must agree",
+				ln.Addr(), cfg.Addr, cfg.AdminAddr, cfg.APIInternalAddr)
 		}
 	}
 	if out.front == nil {
@@ -88,17 +90,25 @@ func sameAddr(a net.Addr, want string) bool {
 	return err == nil && ta.IP.Equal(tw.IP) && ta.Port == tw.Port
 }
 
-// checkAdminSocket 比对"后台是否启动"与"有没有后台的 socket"。只在 socket activation 时可能不一致（自己绑定时按
-// 是否启用决定绑不绑）。不一致时：没人 accept 的 socket 上的连接不会被拒绝，而是挂到网关超时；缺了 socket 则后台
-// 根本没有入口。
-func checkAdminSocket(adminEnabled bool, lns *apiListeners) error {
-	switch {
-	case adminEnabled && lns.admin == nil:
-		return errors.New("app: the admin server is enabled (HTTP_ADMIN_ADDR is set and admin routes are registered) but systemd " +
-			"passed no socket for it: add ListenStream=<HTTP_ADMIN_ADDR> to the .socket unit")
-	case !adminEnabled && lns.admin != nil:
-		return fmt.Errorf("app: systemd passed the admin socket (%s) but the admin server is not enabled (no admin routes): "+
-			"remove that ListenStream= from the .socket unit", lns.admin.Addr())
+// optionalSocket 是按需启动的监听端口（后台、内部端口）：配置了地址并且有路由时才启动。
+type optionalSocket struct {
+	name, env string
+	enabled   bool
+	ln        net.Listener
+}
+
+// checkOptionalSockets 比对"是否启动"与"有没有对应的 socket"。只在 socket activation 时可能不一致（自己绑定时按是否
+// 启用决定绑不绑）。不一致时：没人 accept 的 socket 上的连接不会被拒绝，而是挂到网关超时；缺了 socket 则根本没有入口。
+func checkOptionalSockets(sockets ...optionalSocket) error {
+	for _, s := range sockets {
+		switch {
+		case s.enabled && s.ln == nil:
+			return fmt.Errorf("app: the %s server is enabled (%s is set and %s routes are registered) but systemd "+
+				"passed no socket for it: add ListenStream=<%s> to the .socket unit", s.name, s.env, s.name, s.env)
+		case !s.enabled && s.ln != nil:
+			return fmt.Errorf("app: systemd passed the %s socket (%s) but the %s server is not enabled (no %s routes): "+
+				"remove that ListenStream= from the .socket unit", s.name, s.ln.Addr(), s.name, s.name)
+		}
 	}
 	return nil
 }

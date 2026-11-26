@@ -8,6 +8,7 @@ import (
 
 	"github.com/labstack/echo/v5"
 	echoMiddleware "github.com/labstack/echo/v5/middleware"
+	"github.com/prometheus/client_golang/prometheus"
 	goredis "github.com/redis/go-redis/v9"
 	"github.com/riverqueue/river"
 
@@ -18,6 +19,7 @@ import (
 	"app.local/internal/modules/user/postgres"
 	"app.local/internal/platform/crypto"
 	"app.local/internal/platform/dbtx"
+	"app.local/internal/platform/httpserver"
 	"app.local/internal/platform/oauth"
 	"app.local/internal/platform/queue"
 	"app.local/internal/platform/ratelimit"
@@ -31,6 +33,11 @@ type Deps struct {
 	// Redis 为 nil 时限流退回进程内存（额度按实例数放大）。
 	Redis  *goredis.Client
 	Logger *slog.Logger
+	// AssertionVerifier 验证网关转来的身份断言（基础设施配置 GATEWAY_ASSERTION_PUBLIC_KEYS），没配时为 nil。
+	// USER_AUTH_MODE=gateway 时必须有，由 LoadConfig 保证。
+	AssertionVerifier *crypto.AssertionVerifier
+	// Metrics 是进程的 Registry，网关校验端点的结果指标注册进去；为 nil 时不输出。
+	Metrics prometheus.Registerer
 }
 
 type Module struct {
@@ -40,6 +47,9 @@ type Module struct {
 	redis        *goredis.Client
 	logger       *slog.Logger
 	dataCleaners []DataCleaner
+	verifier     *crypto.AssertionVerifier
+	signer       *crypto.AssertionSigner
+	metrics      prometheus.Registerer
 }
 
 func New(d Deps) *Module {
@@ -63,29 +73,61 @@ func New(d Deps) *Module {
 		},
 		SessionPolicy: configuredSessionPolicy(d.Config),
 	})
-	return &Module{
-		Service: svc,
-		cfg:     d.Config,
-		oauth:   wechatRegistry(d.Config.WeChat),
-		redis:   d.Redis,
-		logger:  d.Logger,
+	m := &Module{
+		Service:  svc,
+		cfg:      d.Config,
+		oauth:    wechatRegistry(d.Config.WeChat),
+		redis:    d.Redis,
+		logger:   d.Logger,
+		verifier: d.AssertionVerifier,
+		metrics:  d.Metrics,
 	}
+	if m.metrics == nil {
+		m.metrics = prometheus.NewRegistry()
+	}
+	if d.Config.AssertionSigningKey != "" {
+		signer, err := crypto.NewAssertionSigner(d.Config.AssertionSigningKey, d.Config.AssertionSigningKID)
+		if err != nil {
+			panic("user: assertion signing key passed LoadConfig but does not parse: " + err.Error())
+		}
+		m.signer = signer
+	}
+	return m
 }
 
-// Middleware 返回其它模块保护前台操作用的鉴权中间件。默认验签 → 按 sid 查会话，吊销立即生效；
-// 配置了 USER_TRUSTED_IDENTITY_HEADER 时改为信任网关透传的用户 ID（部署前提见
-// httpapi.NewTrustedIdentityMiddleware），此时没有会话信息，† 操作一律拒绝。
+// Middleware 返回其它模块保护前台操作用的鉴权中间件。USER_AUTH_MODE=session（默认）时验签 → 按 sid 查会话，吊销
+// 立即生效；gateway 时验证网关转来的身份断言（会话由网关调本模块的校验端点实时查过，见 docs/agents/auth.md）。
 func (m *Module) Middleware() echo.MiddlewareFunc {
-	if m.cfg.TrustedIdentityHeader != "" {
-		return httpapi.NewTrustedIdentityMiddleware(m.cfg.TrustedIdentityHeader)
+	if m.cfg.AuthMode == AuthModeGateway {
+		return httpserver.NewGatewayIdentityMiddleware(m.verifier)
 	}
-	return httpapi.NewSessionMiddleware(m.Service, m.cfg.JWTKeyID, []byte(m.cfg.JWTSigningKey), m.cfg.JWTAdditionalKeys)
+	return httpapi.NewSessionMiddleware(m.sessionAuthConfig())
 }
 
-// RequireRecentAuth 返回保护 † 操作（改绑登录方式、注销等）的中间件：会话的
-// auth_time 要在 USER_REAUTH_WINDOW 之内，挂在 Middleware() 之后。
+func (m *Module) sessionAuthConfig() httpapi.SessionAuthConfig {
+	return httpapi.SessionAuthConfig{
+		Sessions:       m.Service,
+		KeyID:          m.cfg.JWTKeyID,
+		Key:            []byte(m.cfg.JWTSigningKey),
+		AdditionalKeys: m.cfg.JWTAdditionalKeys,
+		ReauthWindow:   m.cfg.ReauthWindow,
+	}
+}
+
+// RequireRecentAuth 返回保护 † 操作（改绑登录方式、注销等）的中间件：最近验证要在 USER_REAUTH_WINDOW 之内，
+// 挂在 Middleware() 之后。两种鉴权方式都把截止时间写进 UserSession.ReauthUntil。
 func (m *Module) RequireRecentAuth() echo.MiddlewareFunc {
-	return httpapi.NewRequireRecentAuth(m.cfg.ReauthWindow)
+	return httpserver.NewRequireRecentAuth()
+}
+
+// RegisterInternalHTTP 挂载 user 在 api 内部端口上的接口：网关的会话校验端点。没配签名私钥时端点照样注册、
+// 一律 500（见 httpapi.NewVerifyHandler）。
+func (m *Module) RegisterInternalHTTP(g *echo.Group) {
+	verify, err := httpapi.NewVerifyHandler(m.sessionAuthConfig(), m.signer, m.metrics)
+	if err != nil {
+		panic("user: register gateway verify endpoint: " + err.Error())
+	}
+	httpapi.RegisterInternal(g, verify)
 }
 
 // RegisterHTTP 挂载 api/openapi.yaml 中 tag=user 的全部操作。
