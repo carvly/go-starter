@@ -3,6 +3,60 @@
 starter 自身的发版说明，升级工具从目标版本读取这份文件的"升级说明"（格式见 `docs/agents/upgrade.md`）。
 根目录的 `CHANGELOG.md` 留给业务项目记录自己的变更，starter 不提供、不覆盖。
 
+## v0.4.0 — 2026-11-27
+
+前台登录：客户端请求头约定、可插拔的登录会话策略，以及网关鉴权（OpenResty 调会话校验端点换 ES256 身份断言），
+取代只做了一半的网关信任 header 模式。没有线上数据，所有改动直接到目标形态，不提供兼容层。
+
+### 破坏性变更
+
+- 前台鉴权失败统一返回 401 `invalid_token`，被登录策略顶掉的会话返回 401 `session_replaced`；鉴权、绑定、重新验证
+  查库失败返回 500，不让客户端登出。错误定义移到 `kit/authn`，user 的 `domain` 保留别名。
+- 删除网关信任 header 模式：去掉 `USER_TRUSTED_IDENTITY_HEADER` 和错误码 `session_unavailable`，† 操作在两种
+  鉴权方式下都可用（`httpserver.NewRequireRecentAuth` 按会话的 `ReauthUntil` 判断）。
+- 原生登录：`NativeLoginRequest` 去掉 `client` 字段；App 入口必须带 `X-Client-Platform`（`android`、`ios`、
+  `harmonyos`），请求体必须带 `device_class`，缺失时返回 400 `client_platform_invalid`、`device_class_invalid`。
+  `Session.client` 的取值随之改变。
+- user 模块的建表迁移有改动：`user_sessions` 新增客户端版本、宿主系统、设备形态、是否被顶掉等列，`client` 和
+  `users.signup_client` 的取值改变。
+- `JWT_SIGNING_KEY` 和 `JWT_ADDITIONAL_KEYS` 里的每把密钥至少 32 字节，没有 kid 的 access token 一律拒绝；
+  `docker-compose.yml` 的开发默认密钥随之加长。
+- sloglint 的 forbidden-keys 新增 `client_platform`、`client_os`、`client_version`、`installation_id`：这些字段由
+  `httpserver` 写入日志上下文，不能手写。
+
+### 新增
+
+- 客户端请求头 `X-Client-Platform`、`X-Client-OS`、`X-Client-Version`、`X-Installation-Id`：`httpserver` 只检查
+  格式，值进日志字段；CORS 放行这四个头。约定见 `docs/agents/http.md` 的"客户端请求头"和"客户端约定"。
+- 登录会话策略 `domain.SessionPolicy`（`Prepare` 在事务外读数据，`Decide` 在事务内持用户行锁）；自带 `SlotLimit`，
+  由 `USER_SESSION_SLOT_LIMIT` 控制每类设备最多保留的会话数，0 为不启用。前台会话列表和后台用户详情展示客户端信息。
+- 网关鉴权 `USER_AUTH_MODE=gateway`：OpenResty 的 `gateway_auth.lua` 子请求 api 内部端口的 `/internal/auth/verify`，
+  换成 user 服务签发的 ES256 断言（30 秒）；后端用 `httpserver.NewGatewayIdentityMiddleware` 验证。带了断言但验不过、
+  校验不可用返回 503 `auth_unavailable`（`errs.KindUnavailable`）。机制见 `docs/agents/auth.md` 的"网关鉴权"。
+- api 内部端口 `HTTP_API_INTERNAL_ADDR`：模块经 `RegisterInternalHTTP` 注册，不进 spec，独立限流和 HTTP 指标。
+- 配置 `USER_ASSERTION_SIGNING_KEY`、`USER_ASSERTION_SIGNING_KID`（user 服务）、`GATEWAY_ASSERTION_PUBLIC_KEYS`
+  （所有验证方）；指标 `gateway_assertion_key_info`、`user_gateway_auth_results_total`。
+- `deploy/baremetal/render.sh --internal-port` 渲染内部端口、`/_auth` 子请求和带鉴权字段的访问日志格式；
+  `deploy/baremetal/gatewaytest` 在真实 OpenResty 容器里验证渲染结果和 Lua。
+
+### 升级说明
+
+#### 合并前
+
+- 用过 `USER_TRUSTED_IDENTITY_HEADER` 的环境改为 `USER_AUTH_MODE=gateway`：按 `docs/agents/deploy-ci.md` 生成断言
+  密钥，配置 `USER_ASSERTION_SIGNING_KEY`、`USER_ASSERTION_SIGNING_KID`、`GATEWAY_ASSERTION_PUBLIC_KEYS`、
+  `HTTP_API_INTERNAL_ADDR`，用 `render.sh --internal-port` 重新生成网关配置。没用过网关模式的不用处理。
+- 长度不足 32 字节的 `JWT_SIGNING_KEY`、`JWT_ADDITIONAL_KEYS` 换成 `openssl rand -base64 32` 生成的新密钥
+  （已登录的用户需要重新登录）。
+- 客户端：App 登录带上 `X-Client-Platform` 和 `device_class`，按 401 的 `invalid_token`、`session_replaced` 和
+  503 `auth_unavailable` 处理（`docs/agents/http.md` 的"客户端约定"）。
+
+#### 合并后迁移前
+
+- user 模块的建表迁移有改动，已执行过的本地库删卷重建（`docker compose down -v`）。
+- 业务代码改到能通过 lint 和测试：处理 `session_unavailable` 的地方删掉，手写 `client_platform` 等日志字段的地方
+  删掉。改完跑 `go build ./...`、`go test ./...`、`make lint` 再续跑。
+
 ## v0.3.0 — 2026-11-23
 
 可观测性（tracing、统一的进程身份与 HTTP 指标、日志关联字段），以及裸机部署改为 systemd socket activation 的
