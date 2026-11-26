@@ -8,7 +8,7 @@ import "app.local/internal/kit/errs"
 var (
 	// ErrInvalidToken：没带令牌、令牌无效或会话已失效。业务接口返回时客户端先刷新令牌再重试。
 	ErrInvalidToken = errs.New(errs.KindUnauthorized, "invalid_token", "登录状态已失效，请重新登录")
-	// ErrSessionReplaced：会话被同一类设备上的新登录顶掉。客户端提示后由用户确认再登录，不能自动重新登录，
+	// ErrSessionReplaced：会话被新登录按登录策略顶掉。客户端提示后由用户确认再登录，不能自动重新登录，
 	// 否则两台设备会互相顶下线。
 	ErrSessionReplaced = errs.New(errs.KindUnauthorized, "session_replaced", "账号已在其它设备登录，请重新登录")
 	// ErrReauthRequired：† 操作要求最近验证过身份。

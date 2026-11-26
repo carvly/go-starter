@@ -191,6 +191,7 @@ postgres 的未导出内容、不能循环 import），`internal/archtest` 只�
 |---|---|---|---|
 | `RegisterHTTP(*echo.Group)` | `httpRegistrars` | 挂载 spec 里本模块 tag 的操作 | `TestRoutes_MatchOpenAPISpec` |
 | `RegisterAdminHTTP(*echo.Group)` | `adminRegistrars` | 挂载 `api/admin.yaml` 里本模块 tag 的后台操作 | `TestAdminRoutes_MatchAdminSpec` |
+| `RegisterInternalHTTP(*echo.Group)` | `internalRegistrars` | 挂载 api 内部端口上的接口（`/internal/` 下，不进 spec，见 [http.md](http.md) 的"spec-first 流程"） | `TestInternalRegistrars_EveryProviderRegistered` |
 | `RegisterJobs(*queue.Workers)` | `jobRegistrars` | 用 `queue.AddWorker` 注册 worker（同时记下 kind） | `TestWorkers_EveryEventKindHasWorker` |
 | `Commands() []cli.Command` | `commandRegistrars` | api 二进制的子命令，名字是 `<模块> <动作>` | `TestExtensions_EveryExtensionIsRegistered` |
 | `PeriodicJobs() []queue.Periodic` | `periodicJobRegistrars` | 定时任务（见 [queue.md](queue.md)） | 同上，并检查每个定时任务都有 worker |

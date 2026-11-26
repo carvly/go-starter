@@ -584,7 +584,7 @@ components:
       description: |
         未提供有效的 Authorization: Bearer token，或会话已失效。code 为 `invalid_token` 时：业务接口返回的，先用
         refresh token 刷新一次再重试（access token 到期也是这个错误）；刷新接口返回的，清掉令牌重新登录。为
-        `session_replaced` 时会话已被同一类设备上的新登录顶掉：清掉令牌，提示"账号已在其它设备登录"，由用户确认后
+        `session_replaced` 时会话已被新登录按登录策略顶掉：清掉令牌，提示"账号已在其它设备登录"，由用户确认后
         再登录，不刷新、不要自动重新登录。
       content:
         application/json:

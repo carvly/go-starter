@@ -1,6 +1,6 @@
 # 鉴权
 
-事实来源：`internal/platform/httpserver/identity.go`、`internal/platform/crypto/`、`internal/platform/oauth/`、`internal/modules/user/module.go`、`internal/modules/staff/adminapi/guard.go`
+事实来源：`internal/platform/httpserver/identity.go`、`internal/platform/httpserver/gateway_identity.go`、`internal/platform/crypto/`、`internal/platform/oauth/`、`internal/kit/authn/`、`internal/modules/user/module.go`、`internal/modules/user/httpapi/`、`internal/modules/staff/adminapi/guard.go`、`deploy/baremetal/openresty/`
 
 给接口加鉴权、改身份类型或密码与令牌的实现之前读这篇。各模块自己的规则跟模块放在一起，随模块一起删除：
 
@@ -30,7 +30,7 @@
 - **`session`（默认）：会话中间件**（`internal/modules/user/httpapi/middleware.go` 的 `NewSessionMiddleware`）：
   验签（HS256 + `kid` 轮换，旧密钥放 `JWT_ADDITIONAL_KEYS`，轮换步骤见 [deploy-ci.md](deploy-ci.md) 的"配置"）
   → 校验 iss/aud/exp → 按 `sid` 查会话。吊销立即生效。没带令牌、验签失败、会话失效返回 401 `invalid_token`，会话被
-  同类设备的新登录顶掉返回 401 `session_replaced`（见 user.md 的"会话策略"）；查会话的数据库查询失败也拒绝，但返回
+  登录策略顶掉（内置策略按设备类别）返回 401 `session_replaced`（见 user.md 的"会话策略"）；查会话的数据库查询失败也拒绝，但返回
   500：客户端只在 401 时清令牌（处理顺序见 [http.md](http.md) 的"客户端约定"），服务端故障不会把用户登出；
 - **`gateway`：网关鉴权**（见下一节）：OpenResty 调 user 服务的校验端点实时查会话，换成签名的身份断言转给后端；后端用
   `internal/platform/httpserver/gateway_identity.go` 的 `NewGatewayIdentityMiddleware` 验证断言。按业务模块拆出独立部署
@@ -53,14 +53,26 @@
 后端：NewGatewayIdentityMiddleware 验证断言
 ```
 
-**为什么网关不自己校验**：只验 JWT 签名做不到立即吊销；Lua 直接查 `user_sessions` 违反表归属、把 `Authenticate`
-的判断写成第二份；读 Redis 多一份要同步的数据。调用校验端点后，会话是否有效只由 `domain.Service.Authenticate`
-判断，会话中间件和校验端点共用 `httpapi/middleware.go` 的同一段代码；网关不持有任何密钥。
+**会话是否有效只由 `domain.Service.Authenticate` 判断**：会话中间件和校验端点共用 `httpapi/middleware.go` 的同一段代码，
+网关不持有任何密钥（为什么不在网关里自己校验，见 [ARCHITECTURE.md](../ARCHITECTURE.md) 的"技术选型"）。
+
+**为什么用 Lua 而不是 nginx 的 `auth_request`**：网关不可用时要返回和应用一致的 JSON 错误体（`auth_unavailable`），
+`auth_request` 的子请求失败只能得到 nginx 的错误页；断言的有效期要从请求体读完之后算起（Lua 先 `ngx.req.read_body()`，
+否则弱网慢上传会让断言在途过期），`auth_request` 在读请求体之前就发子请求；把结果转给上游要在 location 里写
+`proxy_set_header`，会让 server 级的 `snippets/proxy.conf` 全部失效，Lua 用 `ngx.req.set_header` 直接改请求头。
 
 **身份断言**（`internal/platform/crypto/assertion.go`）：ES256（P-256）JWT，header 带 `kid`，`aud` 为
 `gateway-assertion`（与 access token 不同，两种令牌不能互相冒用），30 秒有效，每个请求重新签发（不是缓存）。claims
 带 `sub`、`sid`、`auth_time`、`amr` 和 `reauth_until`（`auth_time + USER_REAUTH_WINDOW`，由签发方算好，验证方不需要
 知道窗口长度）。用 ES256：只有 user 服务持有私钥，验证方拿到的公钥不能签名，拆出去的服务被攻破也伪造不了断言。
+
+- 要签名而不是信任明文头：明文头的安全性完全依赖"客户端连不到后端""每个 location 都清头"，任何一个配错就是任意冒充；
+- 不复用 `JWT_*`：持有 `JWT_SIGNING_KEY` 就能签发登录令牌，验证方不该有这个能力；
+- 不绑定具体请求（不签 method、path）：断言只在网关到后端的内网里出现，绑定要网关参与签名，收益不抵复杂度。代价是在内网
+  截获的断言 30 秒内可以重放，只能冒充同一个人，靠内网隔离；
+- 验证允许签发方与验证方 5 秒的时钟偏差，超过时按服务端问题返回 503；
+- 开销：每个带令牌的请求多一次网关到 user 服务的内网 HTTP（keepalive 复用连接）和一次 ES256 签名；查库次数与会话中间件
+  相同（每个请求一次）。单体部署不开这个模式，没有额外开销。
 
 **校验端点的契约**（`internal/modules/user/httpapi/verify.go`，挂在 api 的内部端口上，不进 spec：它是网关和 user 服务
 之间的基础设施接口，不是客户端契约，和健康检查同类；Go 端单元测试逐行覆盖下表，Lua 与 Go 之间的约定由
@@ -70,8 +82,8 @@
 |---|---|
 | 会话有效 | 200，`X-Auth-Assertion: <断言>`，`Cache-Control: no-store` |
 | 没带令牌、令牌无效、会话失效 | 200，`X-Auth-Status: invalid_token` |
-| 会话被同类设备顶掉 | 200，`X-Auth-Status: session_replaced` |
-| 同一个客户端 IP 超过限流额度 | 429（网关原样回给客户端；内部端口按 IP 限流，与前台分开计数） |
+| 会话被登录策略顶掉 | 200，`X-Auth-Status: session_replaced` |
+| 同一个客户端 IP 超过限流额度 | 429（网关原样回给客户端）。内部端口按客户端 IP 限流，额度同 `HTTP_GLOBAL_RATE_LIMIT_PER_SECOND`、与前台分开计数；IP 取自网关转来的 `X-Forwarded-For`，前提是 `HTTP_TRUSTED_PROXY=true`，否则所有客户端共用网关这一个 IP 的额度 |
 | 查会话失败、没有配置签名私钥 | 500（网关返回 503） |
 
 **后端中间件的结果**：
@@ -102,6 +114,8 @@
 所以 user 模块加载配置时读同一个 `GATEWAY_ASSERTION_PUBLIC_KEYS`，检查清单里有自己正在用的公钥。部署、切换顺序和
 密钥轮换见 [deploy-ci.md](deploy-ci.md) 的"网关鉴权"。
 
+**排查**：校验结果、已加载的公钥和网关访问日志的 `auth` 字段见 [observability.md](observability.md) 的"指标"。
+
 **拆出去的服务**：没有 user 模块的代码，在自己的组合根里用 `httpserver.NewGatewayIdentityMiddleware(Infra 的验证器)`
 和 `httpserver.NewRequireRecentAuth()` 接线；生成器"恰好一个模块提供 `Middleware()`"的规则在拆分时随各服务的组合根
 一起重新设计（见 [modules.md](modules.md) 的"拆成独立部署的服务：前置条件"）。
@@ -127,8 +141,8 @@ func Register(g *echo.Group, h *Handler, mw Middlewares) {
 }
 ```
 
-生成器的 `web.auth` 只生成 `{mw.Auth}` 这一种挂法，不挂 `RequireRecentAuth`
-（`REPO-AUTH-MISSING` 检查有且只有一个模块提供 `Middleware()`）。
+生成器的 `web.auth` 只生成 `{mw.Auth}` 这一种挂法，† 操作的 `RequireRecentAuth` 要手动加。生成时
+`REPO-AUTH-MISSING` 检查恰好有一个模块提供 `Middleware()`。
 
 仓库里目前没有其它前台模块挂它：管理类操作（新建、修改、调整业务数据）放在后台接入面，由员工
 的会话和权限码保护（见 `internal/modules/staff/docs/staff.md`），不是"登录用户即管理员"。后台操作不需要上面这些，

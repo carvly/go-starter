@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/labstack/echo/v5"
 	"github.com/riverqueue/river"
 
 	"app.local/internal/platform/cli"
@@ -155,4 +156,21 @@ func TestCheckExtensions_ReportsEachMistake(t *testing.T) {
 			t.Errorf("problems = %q, want none", problems)
 		}
 	})
+}
+
+// 实现了 RegisterInternalHTTP 的模块必须登记在 internalRegistrars 里：漏登记时编译能过，内部接口却不存在，网关的会话
+// 校验一律 404（网关返回 503）。每个模块在 modules.go 占一行，所以按个数比对。
+func TestInternalRegistrars_EveryProviderRegistered(t *testing.T) {
+	mods := buildModules(newZeroInfra(), testModuleConfigs(t))
+	type internalProvider interface{ RegisterInternalHTTP(*echo.Group) }
+	var providers []string
+	v := reflect.ValueOf(mods).Elem()
+	for i := range v.NumField() {
+		if _, ok := v.Field(i).Interface().(internalProvider); ok {
+			providers = append(providers, v.Type().Field(i).Name)
+		}
+	}
+	if got := len(mods.internalRegistrars()); got != len(providers) {
+		t.Errorf("实现了 RegisterInternalHTTP 的模块 %v，internalRegistrars 登记了 %d 个：在 modules.go 的 internalRegistrars 里各加一行", providers, got)
+	}
 }

@@ -199,8 +199,8 @@ func (s *Service) KickSession(ctx context.Context, userID, sid string) error {
 	return nil
 }
 
-// revokedSessionRetention 是已吊销会话行的物理删除保留期：列表页还能看到最近
-// 吊销的会话，超过后由 user_cleanup 删除。
+// revokedSessionRetention 是已吊销会话行的物理删除保留期：保留期内鉴权和 refresh 还能查到被顶掉的会话、返回
+// session_replaced（列表只列有效会话），超过后由 user_cleanup 删除。
 const revokedSessionRetention = 7 * 24 * time.Hour
 
 // PurgeExpired 删除 oauth_states 的过期行、user_sessions 的过期行和吊销超过

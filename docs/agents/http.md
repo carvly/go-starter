@@ -183,6 +183,21 @@ Timeout（`internal/platform/httpserver/server.go` 的 `newServer`，前台、
 | `X-Client-Version` | 所有端 | App、小程序用 semver（可带 `+构建号`），Web 用构建的 commit 短 hash |
 | `X-Installation-Id` | App、小程序 | 安装级随机 UUID：卸载即重置，不随备份恢复，生成与存储见下文。Web 不发 |
 
+各端的取值来源：
+
+| 端 | `X-Client-Version` | `X-Client-OS` | 其它 |
+|---|---|---|---|
+| Android | `versionName+versionCode` | 不发（与 platform 重复） | 自定义 UA `<App>/<ver> (Android <os>; <型号>)`，带 `Accept-Language` |
+| iOS | `CFBundleShortVersionString+CFBundleVersion` | 不发 | 自定义 UA `<App>/<ver> (iOS <os>; <机型>)`，带 `Accept-Language` |
+| Web | 构建时注入的 commit 短 hash | 不发 | 跨域请求带 `credentials: 'include'`；不发安装 ID：`localStorage` 里的长期 ID 本质是跨会话跟踪标识，Web 排查靠 `X-Trace-Id` 和 `user_id` 足够 |
+| 微信小程序、小游戏 | `wx.getAccountInfoSync().miniProgram.version`，开发版、体验版为空时发 `0.0.0-develop`、`0.0.0-trial` | `wx.getDeviceInfo().platform` | UA、Referer 由微信设定 |
+
+- **小程序、小游戏为什么要报系统**：iOS 和 Android 的平台规则不同（如小游戏的虚拟支付在 iOS 上受限），排查时要分开看；
+- **不解析 Referer**：微信小程序、小游戏的 Referer 是 `https://servicewechat.com/{appid}/{version}/page-frame.html`，但微信
+  官方文档（小程序安全网关"接入网关后的请求差异"）说明经网关时 UA 和 Referer 可能不符合预期，不能用来判断来源；
+- **新生态**（抖音、支付宝、小红书……）按命名规则取值，取值来源按该平台的开放文档核对，在业务项目的客户端约定里登记
+  一行：只进日志不需要改服务端代码；要在这个生态里登录，见 [user.md](../../internal/modules/user/docs/user.md) 的
+  "接入新的登录方式"；
 - **安装 ID 只标识"这一次安装"**：排查只需要把同一次安装的请求串起来，寿命和范围不超过这个用途（最小化原则；和
   `user_id` 一起进日志后，它同样是可关联到个人的信息）。由此：
   - 首次启动生成随机 UUID，存在随应用卸载而清除的位置：Android、鸿蒙用应用私有存储，小程序用本地缓存
@@ -202,17 +217,23 @@ Timeout（`internal/platform/httpserver/server.go` 的 `newServer`，前台、
   （`api/openapi.yaml` 的 `components/parameters`），handler 从生成的参数读取后经 `Sanitized` 检查，不经 `context.Value`；
 - 原生登录的 App 入口用 `X-Client-Platform` 区分系统，缺失或不是 `android`、`ios`、`harmonyos` 时返回 400，见
   [user.md](../../internal/modules/user/docs/user.md) 的"会话记录的客户端"。这个值落库后仍然是自报的，只用于展示；
-- 客户端约定：不发 `traceparent`、`X-Trace-Id`、`X-Auth-Assertion`、`X-Auth-Status`、`X-Forwarded-For`（网关清掉或覆盖）；出错时记下响应头 `X-Trace-Id`，反馈问题
-  时提供。令牌按状态码和 `code` 处理：
-  - 业务接口返回 401 `invalid_token`：用 refresh token 刷新一次，成功后重试原请求。access token 到期、服务端紧急
-    更换签名密钥都走这条，用户无感；同时收到多个 401 时只发一次刷新，其余请求等它的结果；
-  - 刷新接口返回 401 `invalid_token`：清掉令牌，重新登录（可以静默登录）；
-  - 任何接口返回 401 `session_replaced`：清掉令牌，提示后由用户确认再登录，不刷新、不自动登录（见
-    [user.md](../../internal/modules/user/docs/user.md) 的"会话策略"）；
-  - 5xx 保留令牌，按网络错误处理：服务端故障不会把用户登出；
+- 客户端不发 `traceparent`、`X-Trace-Id`、`X-Auth-Assertion`、`X-Auth-Status`、`X-Forwarded-For`（网关清掉或覆盖）；
 - 安装 ID 和 `user_id` 一起进日志（不进 trace，见 [observability.md](observability.md) 的"tracing"），是可关联到个人的
   信息：业务项目的隐私政策要披露"为排查问题记录应用安装标识"和日志的保留期；用户注销后数据库里的数据会清理，日志里的
   记录保留到过期。
+
+## 客户端约定
+
+客户端怎么处理令牌和错误（前台的四端都适用）：
+
+- 每个响应读 `X-Trace-Id`，出错时写进客户端日志，反馈问题时提供；429 读响应体的 `retry_after`（跨域读不到
+  `Retry-After` 头）；
+- 业务接口返回 401 `invalid_token`：用 refresh token 刷新一次，成功后重试原请求。access token 到期、服务端紧急
+  更换签名密钥都走这条，用户无感；同时收到多个 401 时只发一次刷新，其余请求等它的结果；
+- 刷新接口返回 401 `invalid_token`：清掉令牌，重新登录（可以静默登录）；
+- 任何接口返回 401 `session_replaced`：清掉令牌，提示后由用户确认再登录，不刷新、不自动登录（见
+  [user.md](../../internal/modules/user/docs/user.md) 的"会话策略"）；
+- 5xx（含网关鉴权下的 503 `auth_unavailable`）保留令牌，按网络错误处理：服务端故障不会把用户登出。
 
 ## 超时与耗时长的操作
 
@@ -264,4 +285,8 @@ Timeout（`internal/platform/httpserver/server.go` 的 `newServer`，前台、
   文档页、前端托管）：`internal/platform/httpserver/admin_test.go`；
 - 通用请求校验、业务错误渲染、请求体过大：`internal/app/http_test.go`，用真实中间件链，
   只把 Repository 换成 `domaintest` 的 fake；
-- 中间件自己的单测放在定义它的模块里（`internal/modules/user/httpapi/middleware_test.go`）。
+- 客户端请求头的解析、日志字段和 CORS：`internal/platform/httpserver/client_test.go`；
+- 中间件的单测放在定义它的包里：会话中间件 `internal/modules/user/httpapi/middleware_test.go`，网关身份中间件、
+  `RequireRecentAuth` 和内部端口 `internal/platform/httpserver/gateway_identity_test.go`；
+- user 的登录链路和网关模式的端到端：`internal/modules/user/httpapi/` 下的 `chain_test.go`、`flow_test.go`、
+  `login_client_test.go`、`gateway_test.go`；真实 OpenResty 里的网关鉴权：`deploy/baremetal/gatewaytest`（集成测试）。

@@ -132,7 +132,7 @@ type Session struct {
 	LastUsedAt               time.Time
 	ExpiresAt                time.Time
 	RevokedAt                *time.Time
-	// Replaced 表示会话被同一类设备上的新登录顶掉（会话策略吊销），客户端据此提示"账号已在其它设备登录"。
+	// Replaced 表示会话被新登录按登录策略顶掉（内置策略按设备类别），客户端据此提示"账号已在其它设备登录"。
 	Replaced bool
 }
 

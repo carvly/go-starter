@@ -128,19 +128,23 @@ internal/
   app/                     组合根：infra.go、modules.go、migrate.go、module_configs.go、api.go、worker.go（跨模块调用时另有 adapters_*.go）
   kit/                     只依赖标准库的通用件
     errs/                  带 Kind 的业务错误，Kind 决定 HTTP 状态码
+    authn/                 前台鉴权的错误契约（会话中间件和网关身份中间件共用）
+    page/                  后台列表的页码分页
+    secrand/               安全随机串和不可逆摘要
     logctx/                ctx 里的 logger 和日志关联字段（user_id、任务 kind、link_trace_id 等）
     uow/                   UnitOfWork 契约（uowtest 是测试替身）
     lifecycle/             进程内组件的统一启停
   platform/                与业务无关的基础设施
     postgres/              连接池、cursor 编解码（pgtest：集成测试用的容器化 Postgres）
     dbtx/                  UnitOfWork 实现：Resolve/ResolveTx、嵌套 SAVEPOINT
+    migrate/               按独立来源执行 Postgres 迁移
     queue/                 river client、事务内入队的 Inserter、worker 组件、日志字段中间件
     cache/                 RedisCache[T] / NoopCache[T]
     redis/                 Redis 客户端与探活
     ratelimit/             Echo 限流的计数存储（Redis GCRA / 内存）
-    crypto/                Argon2id、JWT 签发与校验
+    crypto/                Argon2id、JWT 签发与校验、网关鉴权的 ES256 身份断言
     oauth/                 第三方登录：浏览器 OAuth 流程与原生 code 换身份（目前只有微信）
-    httpserver/            Echo 构造（前台、后台两个 server）、请求入口（span、X-Trace-Id）、中间件链、错误渲染、HTTP 指标、健康检查、API 文档、排空与关停
+    httpserver/            Echo 构造（前台、后台、api 内部端口）、请求入口（span、X-Trace-Id、客户端请求头）、中间件链、错误渲染、网关身份中间件、HTTP 指标、健康检查、API 文档、排空与关停
     systemd/               socket activation（继承 systemd 绑定的监听 socket）与就绪通知 sd_notify，只用标准库
     logger/                slog 构造：根 Handler 从 ctx 补关联字段和 trace_id、span_id
     tracing/               进程的 TracerProvider（始终有 trace_id，配置了地址才导出）、网关 trace_id 的接收
@@ -191,7 +195,10 @@ testcontainers-go。显式构造函数注入，不用 wire/fx。
 - 裸机发布用 systemd socket activation：两个 api 实例轮流继承 systemd 持有的同一个监听 socket，切换对网关透明，
   只用 systemd 219 的功能（见 [`docs/agents/deploy-ci.md`](agents/deploy-ci.md) 的"裸机发布"）。不用两个端口加网关
   主动健康检查：摘除要等探测间隔、依赖 Lua 健康检查模块，时序不确定；不用 SO_REUSEPORT：关闭时队列里已握手的连接被
-  RST，CentOS 7 的内核不能迁移。
+  RST，CentOS 7 的内核不能迁移；
+- 拆服务时的前台鉴权用网关调 user 服务的校验端点、换 ES256 身份断言（见 [`docs/agents/auth.md`](agents/auth.md) 的
+  "网关鉴权"），不在网关里自己校验：只验 JWT 签名做不到立即吊销，网关直接查会话表违反表归属、把会话判断写成第二份；
+  断言用 ES256 而不是共享密钥：只有 user 服务能签，拆出去的服务被攻破也伪造不了别人的身份。
 
 ## 已实现 / 规划中
 

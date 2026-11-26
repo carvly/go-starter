@@ -1,5 +1,5 @@
 -- 前台用户的登录会话，规则见 internal/modules/user/docs/user.md 的"会话"。登录时签发，每个请求按 sid
--- 校验；吊销（登出、踢下线、停用、注销、换绑解绑、令牌泄露、被同类设备的新登录顶掉）只标记 revoked_at，
+-- 校验；吊销（登出、踢下线、停用、注销、换绑解绑、令牌泄露、被登录策略顶掉）只标记 revoked_at，
 -- user 的定时清理任务再物理删除已过期、以及吊销超过保留期的行。
 CREATE TABLE user_sessions (
     id UUID,
@@ -34,7 +34,7 @@ CREATE INDEX idx_user_sessions_user_id ON user_sessions (user_id);
 COMMENT ON TABLE user_sessions IS '前台用户的登录会话；吊销时标记 revoked_at，过期和吊销超过保留期的行由定时任务删除';
 COMMENT ON COLUMN user_sessions.id IS '会话 ID（sid），应用层生成的 UUIDv7';
 COMMENT ON COLUMN user_sessions.user_id IS '用户 ID（users.id），无外键';
-COMMENT ON COLUMN user_sessions.client IS '客户端：宿主和形态由登录入口决定，App 的系统是客户端自报的；取值 web、android、ios、harmonyos、wechat-miniprogram，接入新的登录入口时追加';
+COMMENT ON COLUMN user_sessions.client IS '客户端：宿主和形态由登录入口决定，App 的系统是客户端自报的；取值见 domain 的 Client* 常量（web、android、ios、harmonyos、<生态>-<形态>）';
 COMMENT ON COLUMN user_sessions.client_version IS '登录时客户端上报的版本（X-Client-Version）；没有上报时为空字符串';
 COMMENT ON COLUMN user_sessions.client_os IS '登录时小程序宿主所在的系统（X-Client-OS）；没有上报时为空字符串';
 COMMENT ON COLUMN user_sessions.device_class IS 'App 登录时上报的设备形态；取值 phone、tablet，其它入口为空字符串';
@@ -53,4 +53,4 @@ COMMENT ON COLUMN user_sessions.updated_at IS '最后更新时间';
 COMMENT ON COLUMN user_sessions.last_used_at IS '最后使用时间';
 COMMENT ON COLUMN user_sessions.expires_at IS '绝对过期时间';
 COMMENT ON COLUMN user_sessions.revoked_at IS '吊销时间；NULL 表示未吊销';
-COMMENT ON COLUMN user_sessions.replaced IS '是否被同一类设备上的新登录顶掉（会话策略吊销）；客户端据此提示账号已在其它设备登录';
+COMMENT ON COLUMN user_sessions.replaced IS '是否被新登录按登录策略顶掉（内置策略按设备类别）；客户端据此提示账号已在其它设备登录';
